@@ -71,14 +71,14 @@ async function handleEvent(event) {
       if (sess && (sess.state === 'await_ack_summary' || sess.state === 'await_ack_steps')) {
         if (sess.state === 'await_ack_summary') {
           sessions.set(userId, { ...sess, state: 'await_ack_steps' })
-          const steps = formatSteps(sess.steps)
+          const steps = formatSteps(sess.steps)    // ← これが無くて落ちてた
           return reply(event.replyToken, `🔧解き方\n${steps}\n\n${pick(PROMPT_AFTER_STEPS)}（むずい時は「ヒント」/ 解けたら答えを書いて送ってね）`)
         }
         if (sess.state === 'await_ack_steps') {
           // ショートカット：答え表示
           if (/答え|こたえ|ans(wer)?/i.test(text)) {
             sessions.set(userId, { ...sess, state: 'done' })
-            const ans = ensureAnswerLine(sess.answer)
+            const ans = ensureAnswerLine(sess.answer) // ← これも未定義だった
             const tail = sess.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨'
             sessions.delete(userId)
             return reply(event.replyToken, `✅${ans}\n\n${tail}`)
@@ -215,6 +215,18 @@ function reply(replyToken, text) {
   return client.replyMessage(replyToken, { type: 'text', text })
 }
 
+// ★ 追加入れ忘れてた2つ
+function formatSteps(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) {
+    return '1) 重要な量を整理\n2) 式を立てて計算\n3) 単位を確認'
+  }
+  return arr.map((s, i) => `${i + 1}) ${s}`).join('\n')
+}
+function ensureAnswerLine(ansRaw) {
+  const a = (ansRaw || '').trim()
+  return /【答え】/.test(a) ? a : `【答え】${a}`
+}
+
 async function fetchImageAsBase64(messageId) {
   const res = await client.getMessageContent(messageId)
   return new Promise((resolve, reject) => {
@@ -306,17 +318,13 @@ function judgeAnswer(userText, solutionLine) {
   const sol  = normalizeAnswer(solutionLine)
 
   if (user.choice && sol.choice && user.choice === sol.choice) return 'correct'
-
-  if (sol.text && user.text && (user.text === sol.text || user.text.includes(sol.text) || sol.text.includes(user.text))) {
-    return 'correct'
-  }
+  if (sol.text && user.text && (user.text === sol.text || user.text.includes(sol.text) || sol.text.includes(user.text))) return 'correct'
 
   if (user.num != null && sol.num != null) {
     const tol = Math.max(Math.abs(sol.num) * 0.01, 0.01)
     if (Math.abs(user.num - sol.num) <= tol) return 'correct'
     return 'incorrect'
   }
-
   return 'unknown'
 }
 
