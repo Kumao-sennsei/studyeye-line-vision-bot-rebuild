@@ -20,6 +20,7 @@ const app = express()
 const client = new Client(config)
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
+// Healthcheck & webhook check
 app.get('/', (_, res) => res.status(200).send('StudyEye LINE bot is running.'))
 app.get('/webhook', (_, res) => res.status(200).send('OK'))
 
@@ -35,39 +36,42 @@ async function handleEvent(event) {
 
     // 画像メッセージ
     if (event.message.type === 'image') {
-      const imageB64 = await fetchImageAsBase64(event.message.id)
+      const imgB64 = await fetchImageAsBase64(event.message.id)
 
       const system = [
-        'あなたは「くまお先生」。やさしく、面白く、絵文字も交えて、自然な会話で教える先生です。',
-        'LaTeX/TeX（\\frac, \\text, \\cdot など）は一切使わない。数式は通常の文字で：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
-        '出力構成：',
-        '①ひとこと励まし（1行）',
-        '②「解き方」見出し → 箇条書きでステップ',
-        '③最後に**必ず**「【答え】…」を1行で明記',
-        '④最後に短い提案（例：「次は…してみよっか？」）',
+        'あなたは「くまお先生」。やさしく面白く、絵文字たっぷりで教える先生。',
+        '!!! 重要：LaTeX/TeX（\\frac, \\text, \\cdot 等）は使用禁止。数式は通常文字で表現：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
+        '出力は **必ずこの順番・見出し**：',
+        '1) ✨問題の要約',
+        '2) 🔧解き方（箇条書きステップ）',
+        '3) ✅【答え】（1行で明記）',
+        '見出し名はそのまま使う。'
       ].join('\n')
 
-      const userInstruction = '画像の内容を読み取り、上の構成どおりに日本語で返答してください。'
+      const user = [
+        '画像の問題を読み取って、上の順番・見出しで日本語で返答してください。',
+        '分数は a/b、平方根は √()、掛け算は · または × を使う。'
+      ].join('\n')
 
-      const completion = await openai.chat.completions.create({
+      const comp = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         temperature: 0.25,
         messages: [
           { role: 'system', content: system },
           { role: 'user',
             content: [
-              { type: 'text', text: userInstruction },
-              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } }
+              { type: 'text', text: user },
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imgB64}` } }
             ]
           }
         ]
       })
 
-      let answer = completion.choices?.[0]?.message?.content?.trim()
+      let out = comp.choices?.[0]?.message?.content?.trim()
         || 'うまく読み取れなかったみたい…もう一度はっきり撮って送ってみてね📸'
 
-      answer = teacherTone(postProcess(answer))
-      return client.replyMessage(event.replyToken, { type: 'text', text: answer })
+      out = finalizeOutput(out)
+      return client.replyMessage(event.replyToken, { type: 'text', text: out })
     }
 
     // テキストメッセージ
@@ -77,17 +81,23 @@ async function handleEvent(event) {
       if (/help|使い方|ヘルプ/i.test(text)) {
         return client.replyMessage(event.replyToken, {
           type: 'text',
-          text: '📸 画像で問題を送ってね！くまお先生がやさしく解説するよ🧸\n✍️ 文字だけの質問もOK！\n✅ 最後に【答え】を1行で明記して返すよ。'
+          text:
+`✨ 写真で問題を送ってね！くまお先生がやさしく解説するよ🧸
+✍️ 文字だけの質問もOK！
+🔎 返答は ①問題の要約 → ②解き方 → ③【答え】 の順でお届けするよ🌟`
         })
       }
 
       const system = [
-        'あなたは「くまお先生」。やさしく、面白く、絵文字も交えて自然な会話をする。',
-        'LaTeX/TeXは禁止。数式は通常の文字で：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
-        '出力構成：励まし1行→「解き方」見出し→手順→【答え】→最後に短い提案。',
+        'あなたは「くまお先生」。やさしく面白く、絵文字たっぷりで自然な会話をする。',
+        'LaTeX/TeXは禁止。数式は通常文字で（√, ², ³, ×, ·, ≤, ≥, 1/2 など）。',
+        '出力は **必ず** 次の順番・見出し：',
+        '1) ✨問題の要約',
+        '2) 🔧解き方（箇条書き）',
+        '3) ✅【答え】（1行）'
       ].join('\n')
 
-      const completion = await openai.chat.completions.create({
+      const comp = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         temperature: 0.25,
         messages: [
@@ -96,11 +106,11 @@ async function handleEvent(event) {
         ]
       })
 
-      let answer = completion.choices?.[0]?.message?.content?.trim()
+      let out = comp.choices?.[0]?.message?.content?.trim()
         || 'ちょっと情報が足りないかも…もう少し詳しく教えてくれる？🧸'
 
-      answer = teacherTone(postProcess(answer))
-      return client.replyMessage(event.replyToken, { type: 'text', text: answer })
+      out = finalizeOutput(out)
+      return client.replyMessage(event.replyToken, { type: 'text', text: out })
     }
 
     return null
@@ -121,10 +131,17 @@ async function fetchImageAsBase64(messageId) {
   })
 }
 
-/*** --- ここから表示きれい化 --- ***/
+/* ===== 表示きれい化：LaTeX除去 + Unicode強化 + 見出し統一 ===== */
+function finalizeOutput(raw) {
+  let t = postProcess(raw)
+  t = normalizeHeadings(t)
+  t = enforceOrder(t)
+  return t.trim()
+}
+
 // LaTeX除去＋Unicode強化
 function postProcess(text) {
-  let t = (text || '').replace(/¥/g, '\\') // 全角バックスラッシュ対策
+  let t = (text || '').replace(/¥/g, '\\')
 
   // LaTeX囲み削除
   t = t.replace(/\\\(|\\\)|\\\[|\\\]/g, '')
@@ -133,66 +150,87 @@ function postProcess(text) {
   // \text{...} → 中身
   t = t.replace(/\\text\{([^{}]+)\}/g, '$1')
 
-  // 基本記号
+  // 記号
   t = t.replace(/\\cdot/g, '·').replace(/\\times/g, '×').replace(/\\pm/g, '±')
   t = t.replace(/\\leq/g, '≤').replace(/\\geq/g, '≥')
   t = t.replace(/<=/g, '≤').replace(/>=/g, '≥')
   t = t.replace(/\\sqrt\s*\(\s*/g, '√(').replace(/sqrt\s*\(\s*/gi, '√(')
 
-  // \frac{a}{b} → (a/b)（1段のみ）
+  // \frac{a}{b} → (a/b)
   t = t.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1/$2)')
 
   // 冪・添字
   t = t.replace(/\^2\b/g, '²').replace(/\^3\b/g, '³')
   t = t.replace(/_1\b/g, '₁').replace(/_2\b/g, '₂').replace(/_3\b/g, '₃').replace(/_4\b/g, '₄').replace(/_5\b/g, '₅')
 
-  // 合字分数（代表）
+  // 合字分数
   t = t.replace(/\b1\/2\b/g, '½').replace(/\b1\/3\b/g, '⅓').replace(/\b2\/3\b/g, '⅔')
   t = t.replace(/\b1\/4\b/g, '¼').replace(/\b3\/4\b/g, '¾')
 
-  // 数字*数字 → 数字·数字、数字 x 数字 → ×
+  // 数字*数字 → · / 数字 x 数字 → ×
   t = t.replace(/(?<=\d)\s*\*\s*(?=\d)/g, '·')
   t = t.replace(/(?<=\d)\s*x\s*(?=\d)/gi, '×')
 
-  // 余分なバックスラッシュ除去 & 連続空行圧縮
+  // 余分なバックスラッシュ/空行
   t = t.replace(/\\+/g, '').replace(/\n{3,}/g, '\n\n')
 
-  // 答え確認
-  if (!/【答え】/.test(t)) {
-    t += '\n\n※【答え】が見つからなかったよ。もう一度送ってみてね。'
-  }
   return t
 }
 
-// くまお先生トーン整形＋提案を添える
-function teacherTone(text) {
-  // 末尾に提案が無ければ、短い提案を足す
-  const hasSuggestion = /次は|つぎは|もう一問|練習問題|復習/.test(text)
-  const suggestion = pickSuggestion(text)
-  let t = text
-
-  // 先頭の見出しをちょい可愛く
-  t = t.replace(/^#+\s*解き方/m, '🧸 **解き方**')
-
-  if (!hasSuggestion) t += `\n\n${suggestion}`
+// 見出し表記を統一（多少ズレても正規化）
+function normalizeHeadings(t) {
+  // 問題の要約
+  t = t.replace(/^\s*(#+\s*)?問題の要約\s*$/m, '✨問題の要約')
+  t = t.replace(/^\s*(#+\s*)?(要点|要約)\s*$/m, '✨問題の要約')
+  // 解き方
+  t = t.replace(/^\s*(#+\s*)?解き方\s*$/m, '🔧解き方')
+  t = t.replace(/^\s*(#+\s*)?(手順|ステップ)\s*$/m, '🔧解き方')
+  // 答え
+  // 既に【答え】がある場合はそのまま。なければ作らない（モデル指示で返す想定）
   return t
 }
 
-function pickSuggestion(text) {
-  // ざっくり科目推定で一言提案
-  if (/速度|加速度|力|N|m\/s/.test(text)) {
-    return '💡 次は「力のつり合い」の基本問題も1問だけやってみよっか？'
+// セクション順序を保証：要約→解き方→【答え】
+function enforceOrder(t) {
+  // セクションを抽出
+  const summary = extractSection(t, /✨問題の要約/i)
+  const steps   = extractSection(t, /🔧解き方/i)
+  const answer  = extractAnswer(t)
+
+  const parts = []
+  parts.push(summary || '✨問題の要約\n（要約を作成できなかったよ…もう一度撮ってみてね📸）')
+  parts.push(steps   || '🔧解き方\n1) 重要な量を整理\n2) 式を立てて計算\n3) 単位も忘れずに確認')
+  parts.push(answer  || '✅【答え】（取得できず）')
+
+  return parts.join('\n\n').trim()
+}
+
+function extractSection(t, headerRegex) {
+  const lines = t.split('\n')
+  let start = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (headerRegex.test(lines[i])) { start = i; break }
   }
-  if (/方程式|連立|一次|二次/.test(text)) {
-    return '✏️ 次は係数をちょっと変えた「練習問題」を1問だけ解いてみよっか？'
+  if (start === -1) return null
+  let end = lines.length
+  for (let j = start + 1; j < lines.length; j++) {
+    if (/^✨問題の要約|^🔧解き方|^✅【答え】/.test(lines[j])) { end = j; break }
   }
-  if (/三角|sin|cos|tan|角度/.test(text)) {
-    return '📐 次は sin・cos の値の暗記チェック、小テストしてみる？'
+  return lines.slice(start, end).join('\n').trim()
+}
+
+function extractAnswer(t) {
+  // 「【答え】」行を優先取得。無ければ推定。
+  const m = t.match(/^[\s\S]*?(✅?【答え】[^\n]*)/m)
+  if (m) {
+    // 以降の行で別見出しが来るまで含める
+    const rest = t.slice(t.indexOf(m[1]))
+    const endIdx = rest.search(/\n(✨問題の要約|🔧解き方)\b/)
+    const block = endIdx === -1 ? rest : rest.slice(0, endIdx)
+    // 先頭に見出しを統一
+    return block.replace(/^.*【答え】/m, '✅【答え】')
   }
-  if (/比例|反比例/.test(text)) {
-    return '📊 次はグラフを書いて、傾きと切片を確認してみよっか？'
-  }
-  return '✅ 次は同じタイプの問題をもう1問だけ解いてみよっか？できたら実力ぐんとUPだよ！'
+  return null
 }
 
 app.listen(PORT, () => {
