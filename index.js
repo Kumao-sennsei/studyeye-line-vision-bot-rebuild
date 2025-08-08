@@ -1,19 +1,19 @@
-// ===== Kumao One-Shot Bot (画像/テキスト→一発解説) =====
-// ※以前の挙動に戻しつつ、数式だけキレイ化（LaTeX禁止→プレーン表記）
+// ===== くまお先生 ワンショット完全版 =====
+// 画像/テキスト → 一発解説。くまお先生トーン、絵文字、答え明記、数式はLaTeX禁止（自動整形）。
 // ENV: CHANNEL_SECRET / CHANNEL_ACCESS_TOKEN / OPENAI_API_KEY
-// OPT: VERIFY_SIGNATURE ("true"|"false"), OAI_MODEL (default "gpt-4o")
+// OPT: VERIFY_SIGNATURE("true"|"false"), OAI_MODEL("gpt-4o" 推奨)
 
 import express from "express";
 import crypto from "crypto";
 
 // ===== ENV =====
 const {
-  PORT = 3000,
+  PORT = process.env.PORT || 3000,
   CHANNEL_SECRET,
   CHANNEL_ACCESS_TOKEN,
   OPENAI_API_KEY,
   VERIFY_SIGNATURE = "true",
-  OAI_MODEL = "gpt-4o",
+  OAI_MODEL = process.env.OAI_MODEL || "gpt-4o",
 } = process.env;
 
 if (!CHANNEL_SECRET || !CHANNEL_ACCESS_TOKEN) {
@@ -40,17 +40,23 @@ const MATH_RULES = `
 
 function cleanMath(t = "") {
   return (t || "")
+    // 分数/根号
     .replace(/\\frac\s*\{([^}]+)\}\s*\{([^}]+)\}/g, "($1)/($2)")
     .replace(/\\sqrt\s*\{([^}]+)\}/g, "sqrt($1)")
+    // 括弧
     .replace(/\\left\(/g, "(").replace(/\\right\)/g, ")")
     .replace(/\\left\[/g, "[").replace(/\\right\]/g, "]")
     .replace(/\\left\{/g, "{").replace(/\\right\}/g, "}")
+    // 演算子・定数
     .replace(/\\cdot/g, "*").replace(/\\times/g, "*")
     .replace(/\\pi/g, "π")
     .replace(/\\leq/g, "<=").replace(/\\geq/g, ">=").replace(/\\ne/g, "!=")
+    // 上下付き
     .replace(/\^\{\s*([^}]+)\s*\}/g, "^$1")
     .replace(/_\{\s*([^}]+)\s*\}/g, "_$1")
+    // デリミタ削除
     .replace(/\\\(|\\\)|\\\[|\\\]|\$\$?/g, "")
+    // 余白
     .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
 
@@ -76,12 +82,18 @@ async function oaiChat(payload){
   return data?.choices?.[0]?.message?.content?.trim() || "";
 }
 
-// 画像→一発解説（以前のワンショット挙動＋数式ルール）
+// 画像→一発解説（くまお先生トーン＋答え明記）
 async function explainFromImage(dataUrl){
   const prompt = `
-画像の問題を読み取り、要点をつかんだうえで一回の解説を出してください。
-- 要約1-2行 → 解き方のコア手順(3-6行) → 最後に「答え：...」を明記。
-- 日本語で簡潔に。式はテキスト表記。${MATH_RULES}
+あなたは「くまお先生」🎓🧸 やさしく自然な会話で、絵文字も適度に使って解説します。
+${MATH_RULES}
+出力フォーマット（厳守）:
+- ひとこと前置き（1行）😊
+- 要点サマリ（1〜2行）
+- 解き方のコア手順（3〜6行・箇条書き）
+- ワンポイント注意（1行）
+- 最後に必ず **「答え：...」** を明記（数式はプレーン表記）
+この画像の問題を読み取って解説してね。
   `;
   return oaiChat({
     model: OAI_MODEL,
@@ -93,13 +105,18 @@ async function explainFromImage(dataUrl){
   });
 }
 
-// テキスト→一発解説（以前のワンショット挙動＋数式ルール）
+// テキスト→一発解説（くまお先生トーン＋答え明記）
 async function explainFromText(q){
   const prompt = `
-次の質問を一回の解説で答えてください。
-- 要約1-2行 → 解き方のコア手順(3-6行) → 最後に「答え：...」を明記。
-- 日本語で簡潔に。式はテキスト表記。${MATH_RULES}
-質問:
+あなたは「くまお先生」🎓🧸 やさしく自然な会話で、絵文字も適度に使って解説します。
+${MATH_RULES}
+出力フォーマット（厳守）:
+- ひとこと前置き（1行）😊
+- 要点サマリ（1〜2行）
+- 解き方のコア手順（3〜6行・箇条書き）
+- ワンポイント注意（1行）
+- 最後に必ず **「答え：...」** を明記（数式はプレーン表記）
+質問：
 ${q}
   `;
   return oaiChat({ model: OAI_MODEL, messages:[{ role:"user", content: prompt }], temperature:0.3 });
@@ -111,6 +128,7 @@ app.use(express.json({ verify: (req,_res,buf)=>{ req.rawBody = buf; } }));
 
 app.get("/", (_req,res)=>res.send("kumao oneshot up"));
 
+// Webhook
 app.post("/webhook", async (req,res)=>{
   try{
     if (VERIFY_SIGNATURE !== "false"){
@@ -129,15 +147,18 @@ app.post("/webhook", async (req,res)=>{
     const msg = ev.message;
     try {
       if (msg.type === "image"){
-        // 画像取得→data:URL
+        // 画像取得→data:URL（安定）
         const r = await fetch(`${LINE_API_BASE}/message/${msg.id}/content`, {
           headers:{ Authorization:`Bearer ${CHANNEL_ACCESS_TOKEN}` }
         });
-        if (!r.ok) throw new Error("getContent failed: "+await r.text());
+        if (!r.ok) {
+          const body = await r.text().catch(()=>"<no-body>");
+          throw new Error(\`getContent failed: status=\${r.status} body=\${body}\`);
+        }
         const ab = await r.arrayBuffer(); const buf = Buffer.from(ab);
         const base64 = buf.toString("base64");
         const ctype = r.headers.get("content-type") || "image/jpeg";
-        const dataUrl = `data:${ctype};base64,${base64}`;
+        const dataUrl = \`data:\${ctype};base64,\${base64}\`;
 
         const out = await explainFromImage(dataUrl);
         const cleaned = cleanMath(out);
@@ -149,9 +170,9 @@ app.post("/webhook", async (req,res)=>{
       }
     } catch(e){
       console.error("handle error:", e?.stack || e);
-      await linePush(userId, textMsgs("うまく解説できなかった…画像は“その場で送信”、テキストはもう一度送ってね。"));
+      await linePush(userId, textMsgs("うまく解説できなかった…🙏 画像は“その場で送信”で、もう一度試してみてね。"));
     }
   }
 });
 
-app.listen(PORT, ()=>console.log(`kumao oneshot listening on :${PORT}, model=${OAI_MODEL}`));
+app.listen(PORT, ()=>console.log(\`kumao oneshot listening on :\${PORT}, model=\${OAI_MODEL}\`));
