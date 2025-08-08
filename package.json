@@ -1,0 +1,23 @@
+{
+  "name": "studyeye-line-vision-bot",
+  "version": "1.0.0",
+  "description": "LINE bot that accepts a photo of a question, asks OpenAI to explain, and replies to the user.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^9.1.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "openai": "^4.55.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}
