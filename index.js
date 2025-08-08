@@ -20,9 +20,9 @@ const app = express()
 const client = new Client(config)
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
-// ユーザーごとの進行状態を保持（メモリ：再起動で消える想定）
+// ユーザーごとの進行状態（メモリ）
 const sessions = new Map()
-// セッションの保存データ：{ summary, steps, answer, suggestion, state }
+// { summary, steps, answer, suggestion, state }
 
 app.get('/', (_, res) => res.status(200).send('StudyEye LINE bot is running.'))
 app.get('/webhook', (_, res) => res.status(200).send('OK'))
@@ -39,11 +39,11 @@ async function handleEvent(event) {
     if (event.type !== 'message') return null
     const userId = event.source?.userId || 'unknown'
 
-    // テキストメッセージでステート遷移
+    // ===== テキストメッセージ =====
     if (event.message.type === 'text') {
       const text = (event.message.text || '').trim()
 
-      // リセットコマンド
+      // リセット
       if (/^リセット$|^reset$/i.test(text)) {
         sessions.delete(userId)
         return client.replyMessage(event.replyToken, { type: 'text', text: 'セッションをリセットしたよ🧸また画像を送ってね📸' })
@@ -54,45 +54,65 @@ async function handleEvent(event) {
         return client.replyMessage(event.replyToken, { type: 'text', text: '📸 まずは問題の写真を送ってね！\n要約→「ここまで大丈夫かな？」→解き方→「一人で解けそう？」→答え の順で少しずつ進めるよ✨\n途中で「リセット」と送るとやり直せるよ。' })
       }
 
+      // 答えショートカット
+      if (/答え|こたえ|ans(wer)?/i.test(text)) {
+        const sessNow = sessions.get(userId)
+        if (sessNow && (sessNow.state === 'await_ack_steps' || sessNow.state === 'await_ack_summary')) {
+          sessions.set(userId, { ...sessNow, state: 'done' })
+          const ans = ensureAnswerLine(sessNow.answer)
+          const tail = sessNow.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨'
+          sessions.delete(userId)
+          return client.replyMessage(event.replyToken, { type: 'text', text: `✅${ans}\n\n${tail}` })
+        }
+      }
+
       const sess = sessions.get(userId)
       if (!sess) {
-        // セッションがないのに返信が来たとき
         return client.replyMessage(event.replyToken, { type: 'text', text: 'まずは問題の写真を送ってね📸\nそこから順番に一緒に進めよう🧸' })
       }
 
-      // 状態に応じて次を出す
+      // 要約→OKの返事で「解き方」へ
       if (sess.state === 'await_ack_summary') {
-        // 生徒の返事を受けて → 解き方を提示し、次の問いかけ
-        sess.state = 'await_ack_steps'
+        sessions.set(userId, { ...sess, state: 'await_ack_steps' })
         const steps = formatSteps(sess.steps)
-        const msg = `🔧解き方\n${steps}\n\nここからは一人で解けそう？🧸`
+        const msg = `🔧解き方\n${steps}\n\nここからは一人で解けそう？🧸（むずい場合は「ヒント」と送ってね✨）`
         return client.replyMessage(event.replyToken, { type: 'text', text: msg })
       }
 
+      // 解き方→「一人で解けそう？」の応答を解析
       if (sess.state === 'await_ack_steps') {
-        // 生徒の返事を受けて → 答え＆提案を提示して完了
-        sess.state = 'done'
-        const ans = ensureAnswerLine(sess.answer)
-        const tail = sess.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨'
-        sessions.delete(userId)
-        return client.replyMessage(event.replyToken, { type: 'text', text: `✅${ans}\n\n${tail}` })
+        // ネガティブ反応 → ヒントのみ返して待機（stateは据え置き）
+        if (isNegative(text) || /ヒント|hint/i.test(text)) {
+          const hint = await makeHint(sess)
+          return client.replyMessage(event.replyToken, { type: 'text', text: hint })
+        }
+        // ポジティブ/前進合図 → 答えへ
+        if (isPositive(text)) {
+          sessions.set(userId, { ...sess, state: 'done' })
+          const ans = ensureAnswerLine(sess.answer)
+          const tail = sess.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨'
+          sessions.delete(userId)
+          return client.replyMessage(event.replyToken, { type: 'text', text: `✅${ans}\n\n${tail}` })
+        }
+        // 中立っぽい返事 → 優しく促す
+        return client.replyMessage(event.replyToken, { type: 'text', text: '大丈夫、ゆっくりでOKだよ🧸\nむずければ「ヒント」と送ってね。進めそうなら「OK」や「できそう」で合図してね✨' })
       }
 
-      // 既にdone
+      // 既に完了
       return client.replyMessage(event.replyToken, { type: 'text', text: 'また新しい問題を送ってね📸 一緒に進めよう🧸' })
     }
 
-    // 画像メッセージ：ここで要約/解き方/答え/提案を作成して保存 → 要約だけ送る
+    // ===== 画像メッセージ：要約/解き方/答え/提案を準備 → 要約だけ送って待つ =====
     if (event.message.type === 'image') {
       const imageB64 = await fetchImageAsBase64(event.message.id)
 
-      // JSONで構造化して出させる（LaTeX禁止＆通常文字で）
+      // 構造化JSONで生成
       const system = [
         'あなたは「くまお先生」。やさしく面白く、絵文字も交えて自然な会話をする先生。',
         'LaTeX/TeX（\\frac, \\text, \\cdot 等）は禁止。数式は通常文字：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
-        '次のJSON形式で**厳密に**出力して（前後の説明文は一切不要）：',
+        '次のJSON形式で厳密に出力（前後の説明禁止）：',
         '{ "summary": "...", "steps": ["...", "..."], "answer": "...", "suggestion": "..." }',
-        '※ answer は1行で明記し、必要なら単位も含める。'
+        '※ answer は1行で明記（単位があれば含める）。'
       ].join('\n')
 
       const user = '画像の問題を読み取り、上記JSON形式で返してください。'
@@ -119,10 +139,8 @@ async function handleEvent(event) {
       const answer = postProcess(parsed.answer || '【答え】（取得できず）')
       const suggestion = postProcess(parsed.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨')
 
-      // セッション保存：要約→待つ から開始
       sessions.set(userId, { summary, steps, answer, suggestion, state: 'await_ack_summary' })
 
-      // 要約だけ送って、問いかけで止める
       const msg = `✨問題の要約\n${summary}\n\nここまで大丈夫かな？👌`
       return client.replyMessage(event.replyToken, { type: 'text', text: msg })
     }
@@ -135,7 +153,7 @@ async function handleEvent(event) {
   }
 }
 
-/* ===== ユーティリティ ===== */
+/* ========== ユーティリティ ========== */
 async function fetchImageAsBase64(messageId) {
   const res = await client.getMessageContent(messageId)
   return new Promise((resolve, reject) => {
@@ -148,15 +166,12 @@ async function fetchImageAsBase64(messageId) {
 
 function safeParseJSON(s) {
   try {
-    // モデルが ```json ... ``` を付ける場合をケア
     const cleaned = s.replace(/```json|```/g, '').trim()
     return JSON.parse(cleaned)
-  } catch {
-    return {}
-  }
+  } catch { return {} }
 }
 
-// 数式きれい化（LaTeX除去＋Unicode）
+// 置換で読みやすく（LaTeX除去＋Unicode）
 function postProcess(text) {
   let t = (text || '').replace(/¥/g, '\\')
   t = t.replace(/\\\(|\\\)|\\\[|\\\]/g, '')
@@ -186,6 +201,42 @@ function ensureAnswerLine(ansRaw) {
   const a = ansRaw || ''
   if (/【答え】/.test(a)) return a
   return `【答え】${a}`
+}
+
+// 反応判定
+function isNegative(text) {
+  return /(無理|できない|できなさそう|わからない|分からない|むずい|難しい|ムズい|ムズ)/i.test(text)
+}
+function isPositive(text) {
+  return /(OK|オーケー|わかった|分かった|理解|大丈夫|いける|できそう|進めて|次へ|go|ゴー)/i.test(text)
+}
+
+// いまの要約/手順から「ヒントだけ」を生成（答えは出さない）
+async function makeHint(sess) {
+  try {
+    const system = [
+      'あなたは「くまお先生」。やさしく短いヒントだけを出す先生。',
+      'LaTeX/TeXは禁止。数式は通常文字で表現（√, ², ×, · など）。',
+      '絶対に最終的な数値や結論は言わない（答えは伏せる）。',
+      'ヒントは最大3個、各1行。最後に「できそうならOK、もっと欲しければ『ヒント』って言ってね✨」を付ける。'
+    ].join('\n')
+    const user = JSON.stringify({
+      summary: sess.summary,
+      steps: sess.steps
+    })
+    const comp = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: `この問題の要約と手順を元に、答えを出さない短いヒントを日本語で作って。\n${user}` }
+      ]
+    })
+    const raw = comp.choices?.[0]?.message?.content?.trim() || 'まずは与えられた量を整理して、何を求めるのか1行で書き出してみよう🧸'
+    return postProcess(raw)
+  } catch {
+    return '大丈夫、まずは「与えられた量」と「求めたい量」を1行で整理してみよう🧸\nできそうならOK、もっと欲しければ「ヒント」って言ってね✨'
+  }
 }
 
 app.listen(PORT, () => {
