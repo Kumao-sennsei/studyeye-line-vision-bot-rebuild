@@ -3,6 +3,7 @@ import express from 'express'
 import { middleware, Client } from '@line/bot-sdk'
 import OpenAI from 'openai'
 
+// --- 環境変数 ---
 const {
   CHANNEL_ACCESS_TOKEN,
   CHANNEL_SECRET,
@@ -24,10 +25,17 @@ const app = express()
 const client = new Client(config)
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
+// Healthcheck
 app.get('/', (req, res) => {
   res.status(200).send('StudyEye LINE bot is running.')
 })
 
+// Webhook確認用（接続確認で200を返す）
+app.get('/webhook', (req, res) => {
+  res.status(200).send('OK')
+})
+
+// Webhook本体
 app.post('/webhook', middleware(config), async (req, res) => {
   Promise
     .all(req.body.events.map(handleEvent))
@@ -58,7 +66,8 @@ async function handleEvent(event) {
         temperature: 0.2,
         messages: [
           { role: 'system', content: system },
-          { role: 'user',
+          {
+            role: 'user',
             content: [
               { type: 'text', text: userInstruction },
               { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } }
