@@ -1,5 +1,5 @@
-// index.js くまお先生ボット “フル実装・LaTeX禁止版（Railway環境変数対応＋画像安定）”
-// 画像→段階対話、テキスト→一発解説、自然会話、即時ACK+Push分割、詳細ログ
+// index.js くまお先生ボット
+// フル実装：自然会話トーン（受領メッセなし）、LaTeX禁止、画像→段階対話／テキスト→一発解説、即時ACK+Push分割、詳細ログ
 // ENV: CHANNEL_SECRET / CHANNEL_ACCESS_TOKEN / OPENAI_API_KEY / VERIFY_SIGNATURE? / REDIS_URL?
 
 import express from "express";
@@ -71,32 +71,32 @@ const chunkText = (text, size = 900) => {
   return out;
 };
 
-// ====== Templates ======
+// ====== くまお先生トーン ======
 const TEMPLATES = {
   confirm_steps: [
-    "この問題、ここまでの読み取りで合ってそう？",
-    "ポイントはこんな感じ。続けていい？",
-    "ざっくり要点はここ！ いったんここまでどう？"
+    "うん、こんな読み取りでいけそう。ここから進めてみるね？",
+    "要点はこんな感じ。流れ、このままで大丈夫そう？",
+    "ざっくり道筋はこれ。ズレてたらここで直そっか？"
   ],
   ask_try_alone: [
-    "ここからは一人でいけそう？試してみる？",
-    "この先は任せてよさそう？ 2分タイマー回すよ⏱",
-    "この一手は自分で置いてみる？"
+    "この先は任せてみてもいい？ちょっとだけやってみよっか",
+    "一手だけ自分で置いてみる？できそうならやってみよ",
+    "いい感じ！ここはたかちゃんの番だね、やってみよう✨"
   ],
   praise: [
-    "いいね👍 着眼が素晴らしい！",
-    "完璧✨ その流れで合ってるよ！",
-    "ナイス！筋が通ってる🧸"
+    "いいね👏 着眼バッチリ！",
+    "完璧だよ✨ その進め方で合ってる！",
+    "ナイス！流れきれいだね🧸"
   ],
   near_miss: [
-    "発想は合ってる👏 この一歩だけ修正しよう（符号／式の並べ方）",
-    "惜しい！ここで条件をもう1回だけ見直そう",
-    "流れOK。計算のここだけ丁寧にいこう"
+    "惜しい…！ここだけ直そ。符号の向き、もう一回だけチェック！",
+    "発想OK。式の並びだけ整えよう、そしたら通るよ",
+    "あと一歩！条件の読み替えをもう一度だけ確認しよ"
   ],
   mid_check: [
-    "ここまでで違和感あるとこある？",
-    "認識ズレないかだけチェックさせて！",
-    "道筋の見取り図は合ってる？"
+    "ここまで違和感ない？",
+    "この見取り図でいけそう？",
+    "進め方、ズレてない感じする？"
   ],
 };
 
@@ -121,7 +121,7 @@ async function linePush(to, messages) {
 const textMsgs = (arr) => (Array.isArray(arr) ? arr : [arr]).map((t) => ({ type: "text", text: t }));
 async function safeText(res) { try { return await res.text(); } catch { return "<no-body>"; } }
 
-// ====== OpenAI (Vision + Text) ======
+// ====== OpenAI（LaTeX禁止） ======
 async function oaiChat(payload) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -137,11 +137,10 @@ async function oaiChat(payload) {
   return data?.choices?.[0]?.message?.content?.trim() || "";
 }
 
-// LaTeX禁止の注意をテンプレ化
 const NO_LATEX_RULES = `
 【重要】数式はLaTeXや特殊記号は禁止。通常のテキスト表記で書くこと。
 - 例: x^2+3x-4=0, 1/2, sqrt(3), a/b
-- 分数は ( ) と / で、累乗は ^ を使う。絶対値は |x|、根号は sqrt() 表記。
+- 分数は ( ) と / 、累乗は ^ 、絶対値は |x| 、根号は sqrt() で表現。
 - 「\\frac」「\\sqrt」「^{ }」「_{ }」「\\( \\)」「$$」などは禁止。
 `;
 
@@ -297,11 +296,7 @@ async function handleEvent(event) {
   if (event.type !== "message") return;
 
   const userId = event.source?.userId;
-  const replyToken = event.replyToken;
   const message = event.message;
-
-  // すぐ軽い返事（空応答回避）
-  try { await lineReply(replyToken, textMsgs("うけとったよ🧸 少し考えるね…")); } catch {}
 
   let s = await getSession(userId);
 
@@ -324,6 +319,7 @@ async function handleEvent(event) {
       s = reduceState(s, "PARSE_DONE", { parse }); await setSession(userId, s);
 
       await linePush(userId, [
+        ...textMsgs("まずは読み取った要点からいこっか。"),
         ...textMsgs(formatKeypoints(parse)),
         ...textMsgs(pick(TEMPLATES.confirm_steps)),
       ]);
@@ -338,12 +334,12 @@ async function handleEvent(event) {
         s = reduceState(s, "YES"); await setSession(userId, s);
         if (s.state === "HINT1") {
           const t1 = await oaiHint1(s.payload.parse);
-          await linePush(userId, [...textMsgs(t1), ...textMsgs("続けようか？（OKで進むよ）")]);
+          await linePush(userId, [...textMsgs(t1), ...textMsgs("よし、この流れで次いこう。準備できたらOKって送ってね")]);
           return;
         }
       } else if (isNo(text)) {
         s = reduceState(s, "NO"); await setSession(userId, s);
-        await linePush(userId, textMsgs("よし修正するね。どの部分が違いそう？（条件／図形／式）"));
+        await linePush(userId, textMsgs("よし、ここで直そ。どの部分が違いそう？（条件／図形／式）"));
         return;
       }
 
@@ -352,7 +348,7 @@ async function handleEvent(event) {
         s = reduceState(s, "CONTINUE"); await setSession(userId, s);
         if (s.state === "HINT2") {
           const t2 = await oaiHint2(s.payload.parse);
-          await linePush(userId, [...textMsgs(t2), ...textMsgs("もう一歩いこう。OKなら続けるよ")]);
+          await linePush(userId, [...textMsgs(t2), ...textMsgs("いい感じ。続けてOK？")]);
           return;
         }
         if (s.state === "SOLUTION") {
@@ -360,7 +356,7 @@ async function handleEvent(event) {
           const chunks = chunkText(sol);
           await linePush(userId, [
             ...textMsgs(chunks),
-            ...textMsgs("ここで区切るね🐾"),
+            ...textMsgs("いったんここで区切るね。続きいこう🧸"),
             ...textMsgs(pick(TEMPLATES.ask_try_alone)),
           ]);
           s = reduceState(s, "ASK_TRY"); await setSession(userId, s);
@@ -384,7 +380,7 @@ async function handleEvent(event) {
         s = reduceState(s, ok ? "CORRECT" : "WRONG"); await setSession(userId, s);
 
         if (s.state === "PRAISE") {
-          await linePush(userId, [...textMsgs(pick(TEMPLATES.praise)), ...textMsgs("仕上げに別解も見てみる？")]);
+          await linePush(userId, [...textMsgs(pick(TEMPLATES.praise)), ...textMsgs("別解も見てみる？")]);
           await clearSession(userId);
           return;
         }
