@@ -1,6 +1,8 @@
 // ===== Kumao minimal stable index.js =====
+// 機能: 画像→要点→ヒント→解法 / テキスト→一発解説
+// くまお先生トーン / LaTeX禁止 / 自動ACKなし / 最小ログ / /selftest
 // ENV: CHANNEL_SECRET / CHANNEL_ACCESS_TOKEN / OPENAI_API_KEY
-// OPT: VERIFY_SIGNATURE ("true" | "false"), OAI_MODEL (default "gpt-4o")
+// OPT: VERIFY_SIGNATURE("true"|"false"), OAI_MODEL(default "gpt-4o")
 
 import express from "express";
 import crypto from "crypto";
@@ -31,14 +33,6 @@ const isYes = (t) => /^(はい|ok|オッケー|おけ|了解|だいじょうぶ|
 const isNo  = (t) => /^(いいえ|いや|ちがう|違う|待って|まって|ストップ)$/i.test((t||"").trim());
 const chunk = (s, n=900) => { const out=[]; let r=s||""; while(r.length>n){out.push(r.slice(0,n)); r=r.slice(n);} if(r) out.push(r); return out; };
 
-async function lineReply(replyToken, messages){
-  const res = await fetch(`${LINE_API_BASE}/message/reply`, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json", Authorization:`Bearer ${CHANNEL_ACCESS_TOKEN}` },
-    body: JSON.stringify({ replyToken, messages }),
-  });
-  if (!res.ok) console.error("lineReply", res.status, await res.text());
-}
 async function linePush(to, messages){
   const res = await fetch(`${LINE_API_BASE}/message/push`, {
     method:"POST",
@@ -105,6 +99,15 @@ app.use(express.json({ verify: (req,_res,buf)=>{ req.rawBody = buf; } }));
 
 app.get("/", (_req,res)=>res.send("kumao minimal up"));
 
+app.get("/selftest", async (_req, res) => {
+  try {
+    const data = await oaiChat({ model: OAI_MODEL, messages:[{role:"user",content:"一言だけ: ok"}], temperature:0 });
+    res.json({ ok:true, model: OAI_MODEL, reply: data.slice(0,50) });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:String(e) });
+  }
+});
+
 app.post("/webhook", async (req,res)=>{
   try{
     if (VERIFY_SIGNATURE !== "false"){
@@ -127,7 +130,6 @@ async function handle(event){
 
   try{
     if (msg.type === "image"){
-      // get content
       const r = await fetch(`${LINE_API_BASE}/message/${msg.id}/content`, {
         headers:{ Authorization:`Bearer ${CHANNEL_ACCESS_TOKEN}` }
       });
@@ -170,7 +172,6 @@ async function handle(event){
         return;
       }
 
-      // answer-looking
       if (/[0-9a-zA-Z()=+\-*/^|]/.test(t) && s.parse){
         const ok = await checkAns(s.parse, t);
         if (ok){
@@ -183,15 +184,18 @@ async function handle(event){
         return;
       }
 
-      // oneshot fallback
       const { summary, next } = await oneshot(t);
       await linePush(userId, textMsgs([...chunk(summary), next]));
       sess.delete(userId);
       return;
     }
   }catch(e){
-    console.error("handle error:", e);
-    await linePush(userId, textMsgs("ちょっと引っかかったみたい。もう一回だけ送ってみよっか。"));
+    console.error("handle error:", e?.stack || e);
+    const msg =
+      (String(e).includes("getContent failed")) ? "画像の取得でつまづいたみたい。端末に保存→その場で送信で試してみよっか。" :
+      (String(e).includes("OpenAI")) ? "解析が混み合ってるみたい。少し待って同じ画像で再送してみて！" :
+      "ちょっと引っかかったみたい。もう一回だけ送ってみよっか。";
+    await linePush(userId, textMsgs(msg));
   }
 }
 
@@ -200,5 +204,4 @@ function formatKeypoints(k){
   return `要点まとめ🧸\n${t}`.slice(0, 4000);
 }
 
-// ===== start =====
 app.listen(PORT, ()=>console.log(`kumao minimal listening on :${PORT}, model=${OAI_MODEL}`));
