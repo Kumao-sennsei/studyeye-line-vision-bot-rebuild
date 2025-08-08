@@ -20,12 +20,9 @@ const app = express()
 const client = new Client(config)
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
-// Healthcheck
-app.get('/', (req, res) => res.status(200).send('StudyEye LINE bot is running.'))
-// Webhook確認用
-app.get('/webhook', (req, res) => res.status(200).send('OK'))
+app.get('/', (_, res) => res.status(200).send('StudyEye LINE bot is running.'))
+app.get('/webhook', (_, res) => res.status(200).send('OK'))
 
-// Webhook本体
 app.post('/webhook', middleware(config), async (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
     .then(result => res.json(result))
@@ -38,25 +35,23 @@ async function handleEvent(event) {
 
     // 画像メッセージ
     if (event.message.type === 'image') {
-      const messageId = event.message.id
-      const imageB64 = await fetchImageAsBase64(messageId)
+      const imageB64 = await fetchImageAsBase64(event.message.id)
 
       const system = [
-        'あなたは中高生向けの優しい先生「くまお先生」です。',
-        '画像は生徒の問題です。読み取りが曖昧でも自然な解釈で解いてください。',
-        '!!! 重要：**LaTeXやTeX記法（\\frac, \\text, \\cdot など）は一切使わない**。',
-        '数式は通常の文字で表現（例：√, ², ³, ×, ·, ≤, ≥, 1/2 など）。',
-        '解説は短く要点中心、手順は番号付き。最後に**必ず**「【答え】…」を1行で明記。'
+        'あなたは「くまお先生」。やさしく、面白く、絵文字も交えて、自然な会話で教える先生です。',
+        'LaTeX/TeX（\\frac, \\text, \\cdot など）は一切使わない。数式は通常の文字で：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
+        '出力構成：',
+        '①ひとこと励まし（1行）',
+        '②「解き方」見出し → 箇条書きでステップ',
+        '③最後に**必ず**「【答え】…」を1行で明記',
+        '④最後に短い提案（例：「次は…してみよっか？」）',
       ].join('\n')
 
-      const userInstruction = [
-        '画像の問題を読み取り、要点→解き方ステップ→【答え】の順で出力してください。',
-        '分数は a/b、平方根は √()、掛け算は · または × を使ってください。',
-      ].join('\n')
+      const userInstruction = '画像の内容を読み取り、上の構成どおりに日本語で返答してください。'
 
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        temperature: 0.2,
+        temperature: 0.25,
         messages: [
           { role: 'system', content: system },
           { role: 'user',
@@ -69,9 +64,9 @@ async function handleEvent(event) {
       })
 
       let answer = completion.choices?.[0]?.message?.content?.trim()
-        || 'うまく解析できませんでした。もう一度撮影して送ってください。'
+        || 'うまく読み取れなかったみたい…もう一度はっきり撮って送ってみてね📸'
 
-      answer = postProcess(answer)
+      answer = teacherTone(postProcess(answer))
       return client.replyMessage(event.replyToken, { type: 'text', text: answer })
     }
 
@@ -80,23 +75,21 @@ async function handleEvent(event) {
       const text = (event.message.text || '').trim()
 
       if (/help|使い方|ヘルプ/i.test(text)) {
-        const help = [
-          '📸 写真で問題を送ってね！くまお先生がやさしく解説するよ〜🧸',
-          '✍️ 文字だけの質問もOK！',
-          '✅ 最後は必ず【答え】を1行で明記して返すよ。'
-        ].join('\n')
-        return client.replyMessage(event.replyToken, { type: 'text', text: help })
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: '📸 画像で問題を送ってね！くまお先生がやさしく解説するよ🧸\n✍️ 文字だけの質問もOK！\n✅ 最後に【答え】を1行で明記して返すよ。'
+        })
       }
 
       const system = [
-        'あなたは中高生向けの優しい先生「くまお先生」です。',
-        '!!! LaTeX/TeX記法は禁止。通常の文字で数式を表現（√, ², ×, ≤ など）。',
-        '最後は必ず「【答え】…」を1行で明記すること。'
+        'あなたは「くまお先生」。やさしく、面白く、絵文字も交えて自然な会話をする。',
+        'LaTeX/TeXは禁止。数式は通常の文字で：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
+        '出力構成：励まし1行→「解き方」見出し→手順→【答え】→最後に短い提案。',
       ].join('\n')
 
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        temperature: 0.2,
+        temperature: 0.25,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: text }
@@ -104,9 +97,9 @@ async function handleEvent(event) {
       })
 
       let answer = completion.choices?.[0]?.message?.content?.trim()
-        || '回答を生成できませんでした。'
+        || 'ちょっと情報が足りないかも…もう少し詳しく教えてくれる？🧸'
 
-      answer = postProcess(answer)
+      answer = teacherTone(postProcess(answer))
       return client.replyMessage(event.replyToken, { type: 'text', text: answer })
     }
 
@@ -122,60 +115,84 @@ async function fetchImageAsBase64(messageId) {
   const res = await client.getMessageContent(messageId)
   return new Promise((resolve, reject) => {
     const chunks = []
-    res.on('data', chunk => chunks.push(chunk))
+    res.on('data', c => chunks.push(c))
     res.on('end', () => resolve(Buffer.concat(chunks).toString('base64')))
     res.on('error', reject)
   })
 }
 
-// —— 数式のUnicode強化 & LaTeXの簡易変換（依存なし！）——
+/*** --- ここから表示きれい化 --- ***/
+// LaTeX除去＋Unicode強化
 function postProcess(text) {
-  // 日本語環境で「¥」が逆スラッシュ代わりに混ざるので先に統一
-  let t = text.replace(/¥/g, '\\')
+  let t = (text || '').replace(/¥/g, '\\') // 全角バックスラッシュ対策
 
-  // 1) TeXの環境/囲みを除去 \( \) \[ \] $$ $$
+  // LaTeX囲み削除
   t = t.replace(/\\\(|\\\)|\\\[|\\\]/g, '')
   t = t.replace(/\${1,2}/g, '')
 
-  // 2) \text{...} → 中身だけ
+  // \text{...} → 中身
   t = t.replace(/\\text\{([^{}]+)\}/g, '$1')
 
-  // 3) 基本記号変換
-  t = t.replace(/\\cdot/g, '·')
-  t = t.replace(/\\times/g, '×')
-  t = t.replace(/\\pm/g, '±')
+  // 基本記号
+  t = t.replace(/\\cdot/g, '·').replace(/\\times/g, '×').replace(/\\pm/g, '±')
   t = t.replace(/\\leq/g, '≤').replace(/\\geq/g, '≥')
   t = t.replace(/<=/g, '≤').replace(/>=/g, '≥')
   t = t.replace(/\\sqrt\s*\(\s*/g, '√(').replace(/sqrt\s*\(\s*/gi, '√(')
 
-  // 4) 分数 \frac{a}{b} → (a/b)
-  //   ネストは深追いせず、1段の素直な形だけ対応
+  // \frac{a}{b} → (a/b)（1段のみ）
   t = t.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '($1/$2)')
 
-  // 5) 添字/冪（よく出るものだけ）
+  // 冪・添字
   t = t.replace(/\^2\b/g, '²').replace(/\^3\b/g, '³')
   t = t.replace(/_1\b/g, '₁').replace(/_2\b/g, '₂').replace(/_3\b/g, '₃').replace(/_4\b/g, '₄').replace(/_5\b/g, '₅')
 
-  // 6) 1/2 など代表分数の合字（読みやすさUP）
+  // 合字分数（代表）
   t = t.replace(/\b1\/2\b/g, '½').replace(/\b1\/3\b/g, '⅓').replace(/\b2\/3\b/g, '⅔')
   t = t.replace(/\b1\/4\b/g, '¼').replace(/\b3\/4\b/g, '¾')
 
-  // 7) 数字*数字 → 数字·数字（コード風 * を避ける）
+  // 数字*数字 → 数字·数字、数字 x 数字 → ×
   t = t.replace(/(?<=\d)\s*\*\s*(?=\d)/g, '·')
-  // 数字 x 数字 → ×
   t = t.replace(/(?<=\d)\s*x\s*(?=\d)/gi, '×')
 
-  // 8) 余分なバックスラッシュを軽く除去（変換後の残り）
-  t = t.replace(/\\+/g, '')
+  // 余分なバックスラッシュ除去 & 連続空行圧縮
+  t = t.replace(/\\+/g, '').replace(/\n{3,}/g, '\n\n')
 
-  // 9) 連続空行の圧縮
-  t = t.replace(/\n{3,}/g, '\n\n')
-
-  // 10) 念のため【答え】が無ければ注意
+  // 答え確認
   if (!/【答え】/.test(t)) {
     t += '\n\n※【答え】が見つからなかったよ。もう一度送ってみてね。'
   }
   return t
+}
+
+// くまお先生トーン整形＋提案を添える
+function teacherTone(text) {
+  // 末尾に提案が無ければ、短い提案を足す
+  const hasSuggestion = /次は|つぎは|もう一問|練習問題|復習/.test(text)
+  const suggestion = pickSuggestion(text)
+  let t = text
+
+  // 先頭の見出しをちょい可愛く
+  t = t.replace(/^#+\s*解き方/m, '🧸 **解き方**')
+
+  if (!hasSuggestion) t += `\n\n${suggestion}`
+  return t
+}
+
+function pickSuggestion(text) {
+  // ざっくり科目推定で一言提案
+  if (/速度|加速度|力|N|m\/s/.test(text)) {
+    return '💡 次は「力のつり合い」の基本問題も1問だけやってみよっか？'
+  }
+  if (/方程式|連立|一次|二次/.test(text)) {
+    return '✏️ 次は係数をちょっと変えた「練習問題」を1問だけ解いてみよっか？'
+  }
+  if (/三角|sin|cos|tan|角度/.test(text)) {
+    return '📐 次は sin・cos の値の暗記チェック、小テストしてみる？'
+  }
+  if (/比例|反比例/.test(text)) {
+    return '📊 次はグラフを書いて、傾きと切片を確認してみよっか？'
+  }
+  return '✅ 次は同じタイプの問題をもう1問だけ解いてみよっか？できたら実力ぐんとUPだよ！'
 }
 
 app.listen(PORT, () => {
