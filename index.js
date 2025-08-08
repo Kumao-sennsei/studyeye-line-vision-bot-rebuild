@@ -23,7 +23,7 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 // In-memory sessions: { summary, steps, answer, suggestion, state }
 const sessions = new Map()
 
-// Randomized friendly prompts
+// ランダム問いかけ
 const PROMPT_AFTER_SUMMARY = [
   'ここまで大丈夫かな？👌',
   'この整理でイメージつかめた？✨',
@@ -50,20 +50,23 @@ async function handleEvent(event) {
     if (event.type !== 'message') return null
     const userId = event.source?.userId || 'unknown'
 
-    /* ===== TEXT: one-shot, accurate & super-natural ===== */
+    /* ===== TEXT: その場でやさしく詳しく（正確重視・超自然会話） ===== */
     if (event.message.type === 'text') {
       const text = (event.message.text || '').trim()
 
-      // Reset / Help
+      // reset / help
       if (/^リセット$|^reset$/i.test(text)) {
         sessions.delete(userId)
         return reply(event.replyToken, 'セッションをリセットしたよ🧸また画像を送ってね📸')
       }
       if (/help|使い方|ヘルプ/i.test(text)) {
-        return reply(event.replyToken, '📸 画像は「少しずつ進める」対話で、\n✍️ テキストは「やさしく詳しく」すぐ解説するよ✨\n途中で「リセット」でやり直せるよ🧸')
+        return reply(event.replyToken,
+`📸 画像は「少しずつ進める」対話。
+✍️ テキストは「やさしく詳しく」すぐ解説するよ✨
+途中で「リセット」でやり直せるよ🧸`)
       }
 
-      // If in image-stage, process stage first
+      // 画像の途中ステージなら優先処理
       const sess = sessions.get(userId)
       if (sess && (sess.state === 'await_ack_summary' || sess.state === 'await_ack_steps')) {
         if (sess.state === 'await_ack_summary') {
@@ -72,6 +75,7 @@ async function handleEvent(event) {
           return reply(event.replyToken, `🔧解き方\n${steps}\n\n${pick(PROMPT_AFTER_STEPS)}（むずい時は「ヒント」/ 解けたら答えを書いて送ってね）`)
         }
         if (sess.state === 'await_ack_steps') {
+          // ショートカット：答え表示
           if (/答え|こたえ|ans(wer)?/i.test(text)) {
             sessions.set(userId, { ...sess, state: 'done' })
             const ans = ensureAnswerLine(sess.answer)
@@ -79,24 +83,32 @@ async function handleEvent(event) {
             sessions.delete(userId)
             return reply(event.replyToken, `✅${ans}\n\n${tail}`)
           }
+          // ヒント or ネガティブ
           if (isNegative(text) || /ヒント|hint/i.test(text)) {
-            const hint = await makeHint(sess)
+            const hint = await makeHint(sess).catch(err => {
+              console.error('MakeHint error:', err)
+              return 'まずは与えられた量と求めたい量を1行で整理しよう🧸\n必要なら「ヒント」ってもう一度言ってね✨'
+            })
             return reply(event.replyToken, hint)
           }
+          // 生徒の自分答え → 判定
           if (looksLikeAnswer(text)) {
             const judge = judgeAnswer(text, sess.answer)
             if (judge === 'correct') {
               sessions.set(userId, { ...sess, state: 'done' })
-              const praise = makePraise(text)
               const tail = sess.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨'
               sessions.delete(userId)
-              return reply(event.replyToken, `${praise}\n\n${tail}`)
+              return reply(event.replyToken, `${makePraise(text)}\n\n${tail}`)
             } else if (judge === 'incorrect') {
-              const correction = await makeCorrection(sess, text)
+              const correction = await makeCorrection(sess, text).catch(err => {
+                console.error('MakeCorrection error:', err)
+                return '途中で符号か単位がズレたかも。もう一度、代入のところをゆっくり見直してみよう🧸'
+              })
               return reply(event.replyToken, correction)
             }
             return reply(event.replyToken, '答えの書き方をもう少し具体的にしてみてね🧸（例：x=3、A、12N など）\nむずければ「ヒント」と送ってね✨')
           }
+          // 前進合図
           if (isPositive(text)) {
             sessions.set(userId, { ...sess, state: 'done' })
             const ans = ensureAnswerLine(sess.answer)
@@ -104,15 +116,16 @@ async function handleEvent(event) {
             sessions.delete(userId)
             return reply(event.replyToken, `✅${ans}\n\n${tail}`)
           }
+          // 中立
           return reply(event.replyToken, '大丈夫、ゆっくりでOKだよ🧸\n進めそうなら答えを送ってね。むずければ「ヒント」って言ってね✨')
         }
       }
 
-      // Plain text Q&A (accurate, natural)
+      // 通常テキストQ&A（正確重視）
       const system = [
         'あなたは「くまお先生」。超自然な会話で、やさしく面白く、絵文字多めで教える。',
         '【重要】答えはできる限り正確に。計算・単位・論理の整合性を厳密に確認する。',
-        'LaTeX/TeXは禁止（\\frac, \\text, \\cdot など）。数式は通常文字：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
+        'LaTeX/TeXは禁止（\\\\frac, \\\\text, \\\\cdot など）。数式は通常文字：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
         '出力構成：',
         '✨問題の要約',
         '🔧解き方（箇条書き3〜6ステップ：短く正確に）',
@@ -120,14 +133,20 @@ async function handleEvent(event) {
         '最後に一言、やさしい励まし or 次の提案（1行）。'
       ].join('\n')
 
-      const comp = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: text }
-        ]
-      })
+      let comp
+      try {
+        comp = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: text }
+          ]
+        })
+      } catch (err) {
+        console.error('OpenAI TEXT error:', err?.status, err?.message, err?.response?.data)
+        return reply(event.replyToken, 'ごめんね💦（TEXT）内部でエラーが出たみたい。キーやモデルの設定を確認中だよ🙏')
+      }
 
       let out = comp.choices?.[0]?.message?.content?.trim()
         || 'ちょっと情報が足りないかも…もう少し詳しく教えてくれる？🧸'
@@ -136,7 +155,7 @@ async function handleEvent(event) {
       return reply(event.replyToken, out)
     }
 
-    /* ===== IMAGE: staged dialog (accurate) ===== */
+    /* ===== IMAGE: 段階対話（正確重視） ===== */
     if (event.message.type === 'image') {
       const imageB64 = await fetchImageAsBase64(event.message.id)
 
@@ -151,19 +170,25 @@ async function handleEvent(event) {
 
       const user = '画像の問題を読み取り、JSONで返すこと。答えはできる限り正確に。'
 
-      const comp = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        temperature: 0.15,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user',
-            content: [
-              { type: 'text', text: user },
-              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } }
-            ]
-          }
-        ]
-      })
+      let comp
+      try {
+        comp = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          temperature: 0.15,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user',
+              content: [
+                { type: 'text', text: user },
+                { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } }
+              ]
+            }
+          ]
+        })
+      } catch (err) {
+        console.error('OpenAI IMAGE error:', err?.status, err?.message, err?.response?.data)
+        return reply(event.replyToken, 'ごめんね💦（IMAGE）内部エラー。少し待ってもう一度試してみてね🙏')
+      }
 
       const raw = comp.choices?.[0]?.message?.content?.trim() || '{}'
       const parsed = safeParseJSON(raw)
@@ -180,7 +205,7 @@ async function handleEvent(event) {
     return null
   } catch (e) {
     console.error('handleEvent error:', e)
-    try { await reply(event.replyToken, 'ごめんね💦 内部でエラーがあったよ。もう一度送ってみてね。') } catch {}
+    try { await reply(event.replyToken, 'ごめんね💦 内部でエラーがあったよ。もう一度お試しください🙏') } catch {}
     return null
   }
 }
@@ -200,14 +225,20 @@ async function fetchImageAsBase64(messageId) {
   })
 }
 
+// JSONの安全パース（崩れた場合も救済）
 function safeParseJSON(s) {
   try {
-    const cleaned = s.replace(/```json|```/g, '').trim()
-    return JSON.parse(cleaned)
-  } catch { return {} }
+    const cleaned = (s || '').replace(/```json|```/g, '').trim()
+    const m = cleaned.match(/\{[\s\S]*\}$/) // 末尾の { ... } を抽出
+    const target = m ? m[0] : cleaned
+    return JSON.parse(target)
+  } catch (e) {
+    console.error('JSON parse error:', e?.message, 'raw=', s)
+    return {}
+  }
 }
 
-// ====== One-shot formatting for TEXT ======
+/* ===== One-shot formatting for TEXT ===== */
 function finalizeText(raw) {
   let t = postProcess(raw)
   t = t.replace(/^\s*(#+\s*)?問題の要約\s*$/m, '✨問題の要約')
@@ -244,7 +275,7 @@ function extractAnswer(t) {
   return null
 }
 
-// ====== Math prettifier (LaTeX strip + Unicode) ======
+/* ===== Math prettifier (LaTeX strip + Unicode) ===== */
 function postProcess(text) {
   let t = (text || '').replace(/¥/g, '\\')
   t = t.replace(/\\\(|\\\)|\\\[|\\\]/g, '')
@@ -265,7 +296,7 @@ function postProcess(text) {
   return t.trim()
 }
 
-// ====== Staged flow helpers for IMAGE ======
+/* ===== 判定・ヒント・ほめ/訂正 ===== */
 function looksLikeAnswer(text) {
   return /-?\d+(\.\d+)?\s*[A-Za-z%℃度NnmmskgVJΩ]|^[\s\S]*[=＝]\s*-?\d|^[\s\S]*\b[ABCDＡ-Ｄ]\b|^\s*[xy]=/i.test(text)
 }
@@ -331,9 +362,31 @@ async function makeCorrection(sess, userText) {
     const raw = comp.choices?.[0]?.message?.content?.trim()
       || '計算の途中で符号か単位がズレたかも。もう一度、式の代入部分をゆっくり確認してみよう🧸'
     return postProcess(raw + '\n\nできたらもう一度答えを送ってみてね✨')
-  } catch {
+  } catch (e) {
+    console.error('OpenAI correction error:', e?.status, e?.message, e?.response?.data)
     return '計算の途中で符号か単位がズレたかも。もう一度、式の代入部分をゆっくり確認してみよう🧸\n\nできたらもう一度答えを送ってみてね✨'
   }
+}
+
+async function makeHint(sess) {
+  const system = [
+    'あなたは「くまお先生」。やさしく短いヒントだけを出す先生（超自然会話）。',
+    'LaTeX/TeXは禁止。数式は通常文字で（√, ², ×, · など）。',
+    '絶対に最終的な数値や結論は言わない（答えは伏せる）。',
+    'ヒントは最大3個、各1行。最後に「できそうならOK、もっと欲しければ『ヒント』って言ってね✨」を付ける。'
+  ].join('\n')
+  const user = JSON.stringify({ summary: sess.summary, steps: sess.steps })
+  const comp = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: `この問題の要約と手順を元に、答えを出さない短いヒントを日本語で作って。\n${user}` }
+    ]
+  })
+  const raw = comp.choices?.[0]?.message?.content?.trim()
+    || 'まずは与えられた量を整理して、何を求めるのか1行で書き出してみよう🧸'
+  return postProcess(raw)
 }
 
 function isNegative(text) {
