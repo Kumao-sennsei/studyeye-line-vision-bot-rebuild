@@ -1,5 +1,5 @@
-// index.js くまお先生ボット “フル実装・Railway変数名対応版”
-// 画像→段階対話、テキスト→一発解説、自然会話、即時ACK+Push分割
+// index.js くまお先生ボット “フル実装・LaTeX禁止版（Railway環境変数対応＋画像安定）”
+// 画像→段階対話、テキスト→一発解説、自然会話、即時ACK+Push分割、詳細ログ
 // ENV: CHANNEL_SECRET / CHANNEL_ACCESS_TOKEN / OPENAI_API_KEY / VERIFY_SIGNATURE? / REDIS_URL?
 
 import express from "express";
@@ -28,11 +28,16 @@ if (!OPENAI_API_KEY) {
 // ====== Optional Redis ======
 let redis = null;
 if (REDIS_URL) {
-  const { createClient } = await import("redis");
-  redis = createClient({ url: REDIS_URL, socket: { tls: REDIS_URL.startsWith("rediss://") } });
-  redis.on("error", (err) => console.error("Redis error:", err));
-  await redis.connect();
-  console.log("Redis connected");
+  try {
+    const { createClient } = await import("redis");
+    redis = createClient({ url: REDIS_URL, socket: { tls: REDIS_URL.startsWith("rediss://") } });
+    redis.on("error", (err) => console.error("Redis error:", err));
+    await redis.connect();
+    console.log("Redis connected");
+  } catch (e) {
+    console.error("Redis init failed (続行します):", e);
+    redis = null;
+  }
 }
 
 // ====== Session ======
@@ -45,7 +50,7 @@ async function getSession(userId) {
   return memSession.get(userId) || { state: "START", payload: {} };
 }
 async function setSession(userId, s) {
-  if (redis) return redis.set(`sess:${userId}`, JSON.stringify(s), { EX: 60 * 60 * 12 });
+  if (redis) return redis.set(`sess:${userId}`, JSON.stringify(s), { EX: 60 * 60 * 12 }); // 12h
   memSession.set(userId, s);
 }
 async function clearSession(userId) {
@@ -103,7 +108,7 @@ async function lineReply(replyToken, messages) {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
     body: JSON.stringify({ replyToken, messages }),
   });
-  if (!res.ok) console.error("lineReply error:", res.status, await res.text());
+  if (!res.ok) console.error("lineReply error:", res.status, await safeText(res));
 }
 async function linePush(to, messages) {
   const res = await fetch(`${LINE_API_BASE}/message/push`, {
@@ -111,9 +116,10 @@ async function linePush(to, messages) {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
     body: JSON.stringify({ to, messages }),
   });
-  if (!res.ok) console.error("linePush error:", res.status, await res.text());
+  if (!res.ok) console.error("linePush error:", res.status, await safeText(res));
 }
 const textMsgs = (arr) => (Array.isArray(arr) ? arr : [arr]).map((t) => ({ type: "text", text: t }));
+async function safeText(res) { try { return await res.text(); } catch { return "<no-body>"; } }
 
 // ====== OpenAI (Vision + Text) ======
 async function oaiChat(payload) {
@@ -122,24 +128,39 @@ async function oaiChat(payload) {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error("OpenAI error: " + JSON.stringify(data));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error("OpenAI error status:", res.status);
+    console.error("OpenAI error body:", JSON.stringify(data));
+    throw new Error("OpenAI error");
+  }
   return data?.choices?.[0]?.message?.content?.trim() || "";
 }
-async function oaiVisionKeypoints(imageBase64) {
+
+// LaTeX禁止の注意をテンプレ化
+const NO_LATEX_RULES = `
+【重要】数式はLaTeXや特殊記号は禁止。通常のテキスト表記で書くこと。
+- 例: x^2+3x-4=0, 1/2, sqrt(3), a/b
+- 分数は ( ) と / で、累乗は ^ を使う。絶対値は |x|、根号は sqrt() 表記。
+- 「\\frac」「\\sqrt」「^{ }」「_{ }」「\\( \\)」「$$」などは禁止。
+`;
+
+// 画像→要点抽出（data:URLで安定）
+async function oaiVisionKeypoints(imageDataUrl) {
   const prompt = `あなたは塾講師のくまお先生。画像の問題文を読み取り、
 1) 問題の種類/分野
 2) 与条件（記号や定数）
 3) 求めるもの
 4) 重要な式・図の読み取り
-を日本語で簡潔に、箇条書き3-6行で要点化してください。`;
+を日本語で簡潔に、箇条書き3-6行で要点化してください。
+${NO_LATEX_RULES}`;
   return await oaiChat({
     model: "gpt-4o-mini",
     messages: [{
       role: "user",
       content: [
         { type: "text", text: prompt },
-        { type: "input_image", image: imageBase64 }
+        { type: "image_url", image_url: { url: imageDataUrl } } // data:URL
       ],
     }],
     temperature: 0.2,
@@ -149,31 +170,55 @@ async function simpleOaiText(prompt, temperature = 0.2) {
   return await oaiChat({ model: "gpt-4o-mini", messages: [{ role: "user", content: prompt }], temperature });
 }
 async function oaiHint1(parseText) {
-  const p = `あなたはくまお先生。次の要点から、最初の一歩のヒントを1-2行で。式は最小限。\n要点:\n${parseText}`;
+  const p = `あなたはくまお先生。次の要点から、最初の一歩のヒントを1-2行で示してください。
+- 前提確認と入口の置き方だけ。式は最小限。
+${NO_LATEX_RULES}
+要点:
+${parseText}`;
   return await simpleOaiText(p, 0.2);
 }
 async function oaiHint2(parseText) {
-  const p = `あなたはくまお先生。次の要点から、二歩目のヒントを1-3行で。解法を確定させる決め手を短く。\n要点:\n${parseText}`;
+  const p = `あなたはくまお先生。次の要点から、二歩目のヒントを1-3行で示してください。
+- 解法を確定させる決め手を短く。
+${NO_LATEX_RULES}
+要点:
+${parseText}`;
   return await simpleOaiText(p, 0.2);
 }
 async function oaiSolution(parseText) {
-  const p = `あなたはくまお先生。次の問題を段階的に解説。
+  const p = `あなたはくまお先生。次の問題を段階的に解説してください。
 - 見出し1行 → ステップ箇条書き(4-7) → 最後にワンポイント注意
-- 各ステップは1-2文、長文禁止、数式は簡潔
-要点:\n${parseText}`;
+- 各ステップは1-2文、長文禁止
+${NO_LATEX_RULES}
+要点:
+${parseText}`;
   return await simpleOaiText(p, 0.3);
 }
 async function oaiCheckAnswer(parseText, userAnswer) {
-  const p = `要点:\n${parseText}\n\n学習者の回答: ${userAnswer}\n判定: 「CORRECT」または「WRONG」だけを出力。`;
+  const p = `要点:
+${parseText}
+
+学習者の回答: ${userAnswer}
+
+判定: 「CORRECT」または「WRONG」だけを出力。${NO_LATEX_RULES}`;
   const out = await simpleOaiText(p, 0);
   return /CORRECT/i.test(out);
 }
 async function oaiMicroReteach(parseText, userAnswer) {
-  const p = `要点:\n${parseText}\n\n学習者の回答: ${userAnswer}\nどこで躓いたかを1点だけ指摘→修正のコツを2行で。式は最小限。`;
+  const p = `要点:
+${parseText}
+
+学習者の回答: ${userAnswer}
+
+どこで躓いたかを1点だけ指摘→修正のコツを2行で。式は最小限。
+${NO_LATEX_RULES}`;
   return await simpleOaiText(p, 0.3);
 }
 async function oaiOneShotExplain(text) {
-  const p = `あなたはくまお先生。次の質問を一発でわかりやすく解説し、最後に次の一手を1行で提案。\n質問:\n${text}`;
+  const p = `あなたはくまお先生。次の質問を一発でわかりやすく解説し、最後に次の一手を1行で提案してください。
+${NO_LATEX_RULES}
+質問:
+${text}`;
   const out = await simpleOaiText(p, 0.3);
   const parts = out.split("\n").filter(Boolean);
   const summary = parts.slice(0, -1).join("\n") || out;
@@ -222,22 +267,30 @@ function reduceState(curr, intent, payload = {}) {
 
 // ====== Express ======
 const app = express();
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 app.get("/", (_req, res) => res.status(200).send("kumao-vision-bot up"));
 app.get("/healthz", (_req, res) => res.status(200).json({ ok: true }));
 
 app.post("/webhook", async (req, res) => {
-  if (VERIFY_SIGNATURE !== "false") {
-    const signature = req.headers["x-line-signature"];
-    const hash = crypto.createHmac("sha256", CHANNEL_SECRET).update(req.rawBody).digest("base64");
-    if (hash !== signature) { console.warn("Signature mismatch"); return res.status(403).send("forbidden"); }
-  }
-  // 即ACK（LINEの3秒制限対策）
-  res.status(200).end();
+  try {
+    if (VERIFY_SIGNATURE !== "false") {
+      const signature = req.headers["x-line-signature"];
+      const hash = crypto.createHmac("sha256", CHANNEL_SECRET).update(req.rawBody).digest("base64");
+      if (hash !== signature) {
+        console.warn("Signature mismatch");
+        return res.status(403).send("forbidden");
+      }
+    }
+    // 即ACK（LINEの3秒制限対策）
+    res.status(200).end();
 
-  const events = req.body?.events || [];
-  for (const ev of events) handleEvent(ev).catch((e) => console.error("handleEvent error:", e));
+    const events = req.body?.events || [];
+    for (const ev of events) handleEvent(ev).catch((e) => console.error("handleEvent error:", e));
+  } catch (e) {
+    console.error("webhook error:", e);
+    try { res.status(200).end(); } catch {}
+  }
 });
 
 async function handleEvent(event) {
@@ -248,23 +301,26 @@ async function handleEvent(event) {
   const message = event.message;
 
   // すぐ軽い返事（空応答回避）
-  await lineReply(replyToken, textMsgs("うけとったよ🧸 少し考えるね…"));
+  try { await lineReply(replyToken, textMsgs("うけとったよ🧸 少し考えるね…")); } catch {}
 
   let s = await getSession(userId);
 
   try {
     if (message.type === "image") {
-      // 画像バイナリ取得 → Base64
+      // 画像バイナリ取得 → data:URL でOpenAIへ
       const contentRes = await fetch(`${LINE_API_BASE}/message/${message.id}/content`, {
         headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` }
       });
-      if (!contentRes.ok) throw new Error("getContent failed: " + (await contentRes.text()));
-      const buf = Buffer.from(await contentRes.arrayBuffer());
+      if (!contentRes.ok) throw new Error("getContent failed: " + await safeText(contentRes));
+      const ab = await contentRes.arrayBuffer();
+      const buf = Buffer.from(ab);
       const base64 = buf.toString("base64");
+      const ctype = contentRes.headers.get("content-type") || "image/jpeg";
+      const dataUrl = `data:${ctype};base64,${base64}`;
 
-      s = reduceState(s, "IMAGE", { image: base64 }); await setSession(userId, s);
+      s = reduceState(s, "IMAGE", { image: dataUrl }); await setSession(userId, s);
 
-      const parse = await oaiVisionKeypoints(base64);
+      const parse = await oaiVisionKeypoints(dataUrl);
       s = reduceState(s, "PARSE_DONE", { parse }); await setSession(userId, s);
 
       await linePush(userId, [
@@ -348,12 +404,12 @@ async function handleEvent(event) {
     }
   } catch (err) {
     console.error("handleEvent inner error:", err);
-    await linePush(userId, textMsgs("内部でエラーがあったよ…ちょっと待っててね🧸"));
+    try { await linePush(userId, textMsgs("内部でエラーがあったよ…ちょっと待っててね🧸")); } catch {}
   }
 }
 
 function formatKeypoints(k) {
-  const t = (k.includes("・") || k.includes("-")) ? k : "・" + k.replace(/\n/g, "\n・");
+  const t = (k && (k.includes("・") || k.includes("-"))) ? k : "・" + (k || "").replace(/\n/g, "\n・");
   return `要点まとめ🧸\n${t}`.slice(0, 4000);
 }
 
