@@ -20,99 +20,111 @@ const app = express()
 const client = new Client(config)
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
-// Healthcheck
+// ユーザーごとの進行状態を保持（メモリ：再起動で消える想定）
+const sessions = new Map()
+// セッションの保存データ：{ summary, steps, answer, suggestion, state }
+
 app.get('/', (_, res) => res.status(200).send('StudyEye LINE bot is running.'))
 app.get('/webhook', (_, res) => res.status(200).send('OK'))
 
 app.post('/webhook', middleware(config), async (req, res) => {
-  Promise.all(req.body.events.map(handleEvent))
-    .then(result => res.json(result))
-    .catch(err => { console.error('Webhook error:', err); res.status(500).end() })
+  Promise.all(req.body.events.map(handleEvent)).then(r => res.json(r)).catch(e => {
+    console.error('Webhook error:', e)
+    res.status(500).end()
+  })
 })
 
 async function handleEvent(event) {
   try {
     if (event.type !== 'message') return null
+    const userId = event.source?.userId || 'unknown'
 
-    // 画像メッセージ
+    // テキストメッセージでステート遷移
+    if (event.message.type === 'text') {
+      const text = (event.message.text || '').trim()
+
+      // リセットコマンド
+      if (/^リセット$|^reset$/i.test(text)) {
+        sessions.delete(userId)
+        return client.replyMessage(event.replyToken, { type: 'text', text: 'セッションをリセットしたよ🧸また画像を送ってね📸' })
+      }
+
+      // ヘルプ
+      if (/help|使い方|ヘルプ/i.test(text)) {
+        return client.replyMessage(event.replyToken, { type: 'text', text: '📸 まずは問題の写真を送ってね！\n要約→「ここまで大丈夫かな？」→解き方→「一人で解けそう？」→答え の順で少しずつ進めるよ✨\n途中で「リセット」と送るとやり直せるよ。' })
+      }
+
+      const sess = sessions.get(userId)
+      if (!sess) {
+        // セッションがないのに返信が来たとき
+        return client.replyMessage(event.replyToken, { type: 'text', text: 'まずは問題の写真を送ってね📸\nそこから順番に一緒に進めよう🧸' })
+      }
+
+      // 状態に応じて次を出す
+      if (sess.state === 'await_ack_summary') {
+        // 生徒の返事を受けて → 解き方を提示し、次の問いかけ
+        sess.state = 'await_ack_steps'
+        const steps = formatSteps(sess.steps)
+        const msg = `🔧解き方\n${steps}\n\nここからは一人で解けそう？🧸`
+        return client.replyMessage(event.replyToken, { type: 'text', text: msg })
+      }
+
+      if (sess.state === 'await_ack_steps') {
+        // 生徒の返事を受けて → 答え＆提案を提示して完了
+        sess.state = 'done'
+        const ans = ensureAnswerLine(sess.answer)
+        const tail = sess.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨'
+        sessions.delete(userId)
+        return client.replyMessage(event.replyToken, { type: 'text', text: `✅${ans}\n\n${tail}` })
+      }
+
+      // 既にdone
+      return client.replyMessage(event.replyToken, { type: 'text', text: 'また新しい問題を送ってね📸 一緒に進めよう🧸' })
+    }
+
+    // 画像メッセージ：ここで要約/解き方/答え/提案を作成して保存 → 要約だけ送る
     if (event.message.type === 'image') {
-      const imgB64 = await fetchImageAsBase64(event.message.id)
+      const imageB64 = await fetchImageAsBase64(event.message.id)
 
+      // JSONで構造化して出させる（LaTeX禁止＆通常文字で）
       const system = [
-        'あなたは「くまお先生」。やさしく面白く、絵文字たっぷりで自然な会話をする先生。',
-        'LaTeX/TeX（\\frac, \\text, \\cdot など）は使わない。数式は通常文字：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
-        '出力テンプレ（順番・見出しを厳守）：',
-        '✨問題の要約',
-        '（1行先生質問）ここまで大丈夫かな？👌',
-        '🔧解き方',
-        '（1行先生質問）ここからは一人で解けそう？🧸',
-        '✅【答え】（1行で明記・単位も）',
-        '（1行提案）次は「確認テスト」や「少し難しい問題」に挑戦してみる？✨',
-        '※解き方は正確に。短い番号付きステップで。'
+        'あなたは「くまお先生」。やさしく面白く、絵文字も交えて自然な会話をする先生。',
+        'LaTeX/TeX（\\frac, \\text, \\cdot 等）は禁止。数式は通常文字：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
+        '次のJSON形式で**厳密に**出力して（前後の説明文は一切不要）：',
+        '{ "summary": "...", "steps": ["...", "..."], "answer": "...", "suggestion": "..." }',
+        '※ answer は1行で明記し、必要なら単位も含める。'
       ].join('\n')
 
-      const user = '画像の問題を読み取って、上のテンプレどおりに日本語で返答してください。'
+      const user = '画像の問題を読み取り、上記JSON形式で返してください。'
 
       const comp = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        temperature: 0.25,
+        temperature: 0.2,
         messages: [
           { role: 'system', content: system },
           { role: 'user',
             content: [
               { type: 'text', text: user },
-              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imgB64}` } }
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } }
             ]
           }
         ]
       })
 
-      let out = comp.choices?.[0]?.message?.content?.trim()
-        || 'うまく読み取れなかったみたい…もう一度はっきり撮って送ってみてね📸'
+      const raw = comp.choices?.[0]?.message?.content?.trim() || '{}'
+      const parsed = safeParseJSON(raw)
 
-      out = finalizeOutput(out, /*interactive=*/true)
-      return client.replyMessage(event.replyToken, { type: 'text', text: out })
-    }
+      const summary = postProcess(parsed.summary || '（要約に失敗したよ…もう一度撮ってみてね📸）')
+      const steps = (parsed.steps || []).map(s => postProcess(s))
+      const answer = postProcess(parsed.answer || '【答え】（取得できず）')
+      const suggestion = postProcess(parsed.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨')
 
-    // テキストメッセージ
-    if (event.message.type === 'text') {
-      const text = (event.message.text || '').trim()
+      // セッション保存：要約→待つ から開始
+      sessions.set(userId, { summary, steps, answer, suggestion, state: 'await_ack_summary' })
 
-      if (/help|使い方|ヘルプ/i.test(text)) {
-        return client.replyMessage(event.replyToken, {
-          type: 'text',
-          text:
-`✨ 画像でも文字でもOK！くまお先生がやさしく解説するよ🧸
-返答は「問題の要約 → 先生からの質問 → 解き方 → 先生からの質問 → 【答え】 → 次の提案」だよ🌟`
-        })
-      }
-
-      const system = [
-        'あなたは「くまお先生」。やさしく面白く、絵文字たっぷりで自然な会話をする。',
-        'LaTeX/TeXは禁止。数式は通常文字で（√, ², ³, ×, ·, ≤, ≥, 1/2 など）。',
-        '出力テンプレ（順番・見出し厳守）：',
-        '✨問題の要約',
-        'ここまで大丈夫かな？👌',
-        '🔧解き方',
-        'ここからは一人で解けそう？🧸',
-        '✅【答え】（1行・単位も）',
-        '次は確認テストや少し難しい問題にも挑戦してみる？✨'
-      ].join('\n')
-
-      const comp = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        temperature: 0.25,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: text }
-        ]
-      })
-
-      let out = comp.choices?.[0]?.message?.content?.trim()
-        || 'ちょっと情報が足りないかも…もう少し詳しく教えてくれる？🧸'
-
-      out = finalizeOutput(out, /*interactive=*/true)
-      return client.replyMessage(event.replyToken, { type: 'text', text: out })
+      // 要約だけ送って、問いかけで止める
+      const msg = `✨問題の要約\n${summary}\n\nここまで大丈夫かな？👌`
+      return client.replyMessage(event.replyToken, { type: 'text', text: msg })
     }
 
     return null
@@ -123,6 +135,7 @@ async function handleEvent(event) {
   }
 }
 
+/* ===== ユーティリティ ===== */
 async function fetchImageAsBase64(messageId) {
   const res = await client.getMessageContent(messageId)
   return new Promise((resolve, reject) => {
@@ -133,16 +146,17 @@ async function fetchImageAsBase64(messageId) {
   })
 }
 
-/* ===== 表示きれい化 & 会話化 ===== */
-function finalizeOutput(raw, interactive=false) {
-  let t = postProcess(raw)
-  t = normalizeHeadings(t)
-  t = enforceOrder(t)
-  if (interactive) t = ensurePrompts(t)
-  return t.trim()
+function safeParseJSON(s) {
+  try {
+    // モデルが ```json ... ``` を付ける場合をケア
+    const cleaned = s.replace(/```json|```/g, '').trim()
+    return JSON.parse(cleaned)
+  } catch {
+    return {}
+  }
 }
 
-// LaTeX除去＋Unicode強化
+// 数式きれい化（LaTeX除去＋Unicode）
 function postProcess(text) {
   let t = (text || '').replace(/¥/g, '\\')
   t = t.replace(/\\\(|\\\)|\\\[|\\\]/g, '')
@@ -160,74 +174,18 @@ function postProcess(text) {
   t = t.replace(/(?<=\d)\s*\*\s*(?=\d)/g, '·')
   t = t.replace(/(?<=\d)\s*x\s*(?=\d)/gi, '×')
   t = t.replace(/\\+/g, '').replace(/\n{3,}/g, '\n\n')
-  return t
+  return t.trim()
 }
 
-// 見出し統一
-function normalizeHeadings(t) {
-  t = t.replace(/^\s*(#+\s*)?問題の要約\s*$/m, '✨問題の要約')
-  t = t.replace(/^\s*(#+\s*)?(要点|要約)\s*$/m, '✨問題の要約')
-  t = t.replace(/^\s*(#+\s*)?解き方\s*$/m, '🔧解き方')
-  t = t.replace(/^\s*(#+\s*)?(手順|ステップ)\s*$/m, '🔧解き方')
-  // 【答え】はモデル出力を尊重
-  return t
+function formatSteps(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return '1) 重要な量を整理\n2) 式を立てて計算\n3) 単位を確認'
+  return arr.map((s, i) => `${i+1}) ${s}`).join('\n')
 }
 
-// セクション順序を保証：要約→解き方→【答え】
-function enforceOrder(t) {
-  const summary = extractSection(t, /✨問題の要約/i) || '✨問題の要約\n（要約を作成できなかったよ…もう一度撮ってみてね📸）'
-  const steps   = extractSection(t, /🔧解き方/i)   || '🔧解き方\n1) 重要な量を整理\n2) 式を立てて計算\n3) 単位を確認'
-  const answer  = extractAnswer(t)                  || '✅【答え】（取得できず）'
-  return [summary, steps, answer].join('\n\n')
-}
-
-function extractSection(t, headerRegex) {
-  const lines = t.split('\n')
-  let start = -1
-  for (let i = 0; i < lines.length; i++) if (headerRegex.test(lines[i])) { start = i; break }
-  if (start === -1) return null
-  let end = lines.length
-  for (let j = start + 1; j < lines.length; j++) {
-    if (/^✨問題の要約|^🔧解き方|^✅【答え】/.test(lines[j])) { end = j; break }
-  }
-  return lines.slice(start, end).join('\n').trim()
-}
-
-function extractAnswer(t) {
-  const m = t.match(/^[\s\S]*?(✅?【答え】[^\n]*)/m)
-  if (m) {
-    const rest = t.slice(t.indexOf(m[1]))
-    const endIdx = rest.search(/\n(✨問題の要約|🔧解き方)\b/)
-    const block = endIdx === -1 ? rest : rest.slice(0, endIdx)
-    return block.replace(/^.*【答え】/m, '✅【答え】')
-  }
-  return null
-}
-
-// セクションの間に先生の問いかけ＆最後に提案を保証
-function ensurePrompts(t) {
-  const lines = t.split('\n')
-  const out = []
-  let sawSummary = false, sawSteps = false, sawAnswer = false
-  for (let i = 0; i < lines.length; i++) {
-    const L = lines[i]
-    out.push(L)
-    if (/^✨問題の要約/.test(L)) sawSummary = true
-    else if (sawSummary && /^🔧解き方/.test(L) && !out.some(x => /ここまで大丈夫かな？/i.test(x))) {
-      // 要約の直後に無ければ差し込み
-      out.splice(out.length - 1, 0, 'ここまで大丈夫かな？👌')
-    }
-    if (/^🔧解き方/.test(L)) sawSteps = true
-    else if (sawSteps && /^✅【答え】/.test(L) && !out.some(x => /一人で解けそう/i.test(x))) {
-      out.splice(out.length - 1, 0, 'ここからは一人で解けそう？🧸')
-    }
-    if (/^✅【答え】/.test(L)) sawAnswer = true
-  }
-  // 末尾に提案がなければ足す
-  if (sawAnswer && !out.some(x => /確認テスト|難しい問題|もう一問/i.test(x))) {
-    out.push('次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨')
-  }
-  return out.join('\n')
+function ensureAnswerLine(ansRaw) {
+  const a = ansRaw || ''
+  if (/【答え】/.test(a)) return a
+  return `【答え】${a}`
 }
 
 app.listen(PORT, () => {
