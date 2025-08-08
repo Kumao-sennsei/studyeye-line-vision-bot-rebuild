@@ -1,7 +1,7 @@
 {
   "name": "kumao-line-bot",
-  "version": "1.1.0",
-  "description": "Kumao-sensei LINE bot: TEXT questions answered gently; IMAGE questions handled via staged dialog with hints, answer judging, praise/correction.",
+  "version": "1.2.0",
+  "description": "Kumao-sensei LINE bot: Accurate answers, super-natural conversation. TEXT = one-shot detailed. IMAGE = staged dialog with hints, judging, praise/correction. Random friendly prompts.",
   "main": "index.js",
   "type": "module",
   "scripts": {

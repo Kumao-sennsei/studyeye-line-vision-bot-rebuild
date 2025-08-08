@@ -23,6 +23,19 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 // In-memory sessions: { summary, steps, answer, suggestion, state }
 const sessions = new Map()
 
+// Randomized friendly prompts
+const PROMPT_AFTER_SUMMARY = [
+  'ここまで大丈夫かな？👌',
+  'この整理でイメージつかめた？✨',
+  'どこまでOKそう？一緒に確認しよ🧸'
+]
+const PROMPT_AFTER_STEPS = [
+  'ここからは一人で解けそう？🧸',
+  'この先は自分でいけそうかな？💪',
+  '続きはどう攻める？やってみる？🔥'
+]
+const pick = arr => arr[Math.floor(Math.random() * arr.length)]
+
 app.get('/', (_, res) => res.status(200).send('Kumao LINE bot is running.'))
 app.get('/webhook', (_, res) => res.status(200).send('OK'))
 
@@ -37,7 +50,7 @@ async function handleEvent(event) {
     if (event.type !== 'message') return null
     const userId = event.source?.userId || 'unknown'
 
-    /* ===== TEXT: gentle, detailed one-shot ===== */
+    /* ===== TEXT: one-shot, accurate & super-natural ===== */
     if (event.message.type === 'text') {
       const text = (event.message.text || '').trim()
 
@@ -50,15 +63,13 @@ async function handleEvent(event) {
         return reply(event.replyToken, '📸 画像は「少しずつ進める」対話で、\n✍️ テキストは「やさしく詳しく」すぐ解説するよ✨\n途中で「リセット」でやり直せるよ🧸')
       }
 
-      // If in image-stage, process student responses (answer, hint, etc.)
+      // If in image-stage, process stage first
       const sess = sessions.get(userId)
       if (sess && (sess.state === 'await_ack_summary' || sess.state === 'await_ack_steps')) {
-        // Stage handling
         if (sess.state === 'await_ack_summary') {
           sessions.set(userId, { ...sess, state: 'await_ack_steps' })
           const steps = formatSteps(sess.steps)
-          const msg = `🔧解き方\n${steps}\n\nここからは一人で解けそう？🧸（むずい時は「ヒント」/ 解けたら答えを書いて送ってね）`
-          return reply(event.replyToken, msg)
+          return reply(event.replyToken, `🔧解き方\n${steps}\n\n${pick(PROMPT_AFTER_STEPS)}（むずい時は「ヒント」/ 解けたら答えを書いて送ってね）`)
         }
         if (sess.state === 'await_ack_steps') {
           if (/答え|こたえ|ans(wer)?/i.test(text)) {
@@ -97,11 +108,12 @@ async function handleEvent(event) {
         }
       }
 
-      // Otherwise: treat as plain text Q&A (one-shot)
+      // Plain text Q&A (accurate, natural)
       const system = [
-        'あなたは「くまお先生」。やさしく面白く、絵文字多めで自然な日本語で教える。',
+        'あなたは「くまお先生」。超自然な会話で、やさしく面白く、絵文字多めで教える。',
+        '【重要】答えはできる限り正確に。計算・単位・論理の整合性を厳密に確認する。',
         'LaTeX/TeXは禁止（\\frac, \\text, \\cdot など）。数式は通常文字：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
-        '出力構成（順守）：',
+        '出力構成：',
         '✨問題の要約',
         '🔧解き方（箇条書き3〜6ステップ：短く正確に）',
         '✅【答え】（1行で明記・単位も）',
@@ -110,7 +122,7 @@ async function handleEvent(event) {
 
       const comp = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        temperature: 0.25,
+        temperature: 0.2,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: text }
@@ -124,23 +136,24 @@ async function handleEvent(event) {
       return reply(event.replyToken, out)
     }
 
-    /* ===== IMAGE: staged dialog ===== */
+    /* ===== IMAGE: staged dialog (accurate) ===== */
     if (event.message.type === 'image') {
       const imageB64 = await fetchImageAsBase64(event.message.id)
 
       const system = [
-        'あなたは「くまお先生」。やさしく面白く、絵文字も交えて自然な会話をする先生。',
+        'あなたは「くまお先生」。超自然な会話でやさしく面白く、絵文字も交える。',
+        '【重要】答えはできる限り正確に。計算・単位・論理の整合性を厳密に確認する。',
         'LaTeX/TeXは使わない。数式は通常文字：√, ², ³, ×, ·, ≤, ≥, 1/2 など。',
         '次のJSONで厳密に出力（前後文禁止）：',
         '{ "summary": "...", "steps": ["...", "..."], "answer": "...", "suggestion": "..." }',
         '※ answer は1行・単位を含めて明記。'
       ].join('\n')
 
-      const user = '画像の問題を読み取り、JSONで返すこと。'
+      const user = '画像の問題を読み取り、JSONで返すこと。答えはできる限り正確に。'
 
       const comp = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
-        temperature: 0.2,
+        temperature: 0.15,
         messages: [
           { role: 'system', content: system },
           { role: 'user',
@@ -161,7 +174,7 @@ async function handleEvent(event) {
       const suggestion = postProcess(parsed.suggestion || '次は「確認テスト」や「少し難しい問題」にも挑戦してみる？✨')
 
       sessions.set(userId, { summary, steps, answer, suggestion, state: 'await_ack_summary' })
-      return reply(event.replyToken, `✨問題の要約\n${summary}\n\nここまで大丈夫かな？👌`)
+      return reply(event.replyToken, `✨問題の要約\n${summary}\n\n${pick(PROMPT_AFTER_SUMMARY)}`)
     }
 
     return null
@@ -293,8 +306,9 @@ function makePraise(userText) {
 async function makeCorrection(sess, userText) {
   try {
     const system = [
-      'あなたは「くまお先生」。やさしく、短く、要点だけ直す先生。',
-      'LaTeX/TeXは禁止。数式は通常文字で（√, ², ×, ·, ≤, ≥ など）。',
+      'あなたは「くまお先生」。やさしく、短く、要点だけ直す先生。超自然な会話で。',
+      '【重要】正確さ重視。式の流れ・単位・符号の確認。',
+      'LaTeX/TeXは禁止。数式は通常文字（√, ², ×, ·, ≤, ≥ など）。',
       'ゴール：生徒の答えのズレを1〜3点で指摘 → 正しいアプローチを簡潔に → 最後に励まし。',
       '最終的な【答え】はまだ言わず、やり直しを促す。'
     ].join('\n')
