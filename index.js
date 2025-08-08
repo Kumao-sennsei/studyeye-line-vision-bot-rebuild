@@ -1,5 +1,5 @@
-// ===== くまお先生 ワンショット完全版 =====
-// 画像/テキスト → 一発解説。くまお先生トーン、絵文字、答え明記、数式はLaTeX禁止（自動整形）。
+// ===== くまお先生 ワンショット完全版（SyntaxError修正） =====
+// 画像/テキスト → 一発解説。くまお先生トーン、答え明記、数式はLaTeX禁止（自動整形）。
 // ENV: CHANNEL_SECRET / CHANNEL_ACCESS_TOKEN / OPENAI_API_KEY
 // OPT: VERIFY_SIGNATURE("true"|"false"), OAI_MODEL("gpt-4o" 推奨)
 
@@ -153,12 +153,13 @@ app.post("/webhook", async (req,res)=>{
         });
         if (!r.ok) {
           const body = await r.text().catch(()=>"<no-body>");
-          throw new Error(\`getContent failed: status=\${r.status} body=\${body}\`);
+          // ★ここをテンプレ文字列ではなく連結に変更してSyntaxError回避
+          throw new Error('getContent failed: status=' + r.status + ' body=' + body);
         }
         const ab = await r.arrayBuffer(); const buf = Buffer.from(ab);
         const base64 = buf.toString("base64");
         const ctype = r.headers.get("content-type") || "image/jpeg";
-        const dataUrl = \`data:\${ctype};base64,\${base64}\`;
+        const dataUrl = 'data:' + ctype + ';base64,' + base64;
 
         const out = await explainFromImage(dataUrl);
         const cleaned = cleanMath(out);
@@ -175,4 +176,4 @@ app.post("/webhook", async (req,res)=>{
   }
 });
 
-app.listen(PORT, ()=>console.log(\`kumao oneshot listening on :\${PORT}, model=\${OAI_MODEL}\`));
+app.listen(PORT, ()=>console.log('kumao oneshot listening on :' + PORT + ', model=' + OAI_MODEL));
