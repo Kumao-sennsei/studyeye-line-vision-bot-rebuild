@@ -1,17 +1,48 @@
-# Kumao LINE Bot (Accurate + Random Prompts)
-- ✍️ TEXT: くまお先生が **やさしく詳しく** 一発回答（要約→解き方→【答え】）。正確さ重視。
-- 📸 IMAGE: **段階対話**（要約→待つ→解き方→待つ→答え）。
-  - 「無理/できない/ヒント」でヒント返答＆待機
-  - 生徒の答えを判定（±1% or ±0.01）→ 正解はほめる／不正解はやさしく訂正
-  - 問いかけは **ランダム文言**（3パターン）で自然な会話感を演出
-- 数式は **Unicode強化**（√, ², ×, ≤ など）＆ **LaTeX記法は禁止・除去**。
+# StudyEye LINE Vision Bot (Rebuild)
 
-## Setup
-1) Node.js 18+
-2) `npm install`
-3) `.env` を作成しキー設定（.env.example参照）
-4) `npm start`
+画像で送られた学習の質問を OpenAI に解析させ、解説文を LINE に返信します。
+2025-07-17 に動いていた機能を最短で再現するための **最小構成** です。
 
-## Railway
-- Variables: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY
-- Webhook: `https://<railway-app>/webhook`
+## セットアップ
+
+1) Node.js 18+ を用意
+2) このリポジトリを解凍
+3) 依存関係をインストール:
+   ```bash
+   npm install
+   ```
+4) 環境変数ファイルを作成:
+   ```bash
+   cp .env.example .env
+   # .env を開き、以下をセット
+   # CHANNEL_ACCESS_TOKEN=
+   # CHANNEL_SECRET=
+   # OPENAI_API_KEY=
+   ```
+
+## ローカル起動
+```bash
+npm start
+# http://localhost:3000
+```
+
+## Webhook 設定（LINE Developers）
+- Messaging API チャネルを作成済みであること（公式アカウントの審査は未承認でも開発は可能）
+- Webhook URL: `https://<あなたのサーバー>/webhook`
+- Webhook の利用: 有効
+- 「チャネルアクセストークン（長期）」と「チャネルシークレット」を取得し .env に設定
+
+### ngrok 等でローカルを公開する場合
+```bash
+ngrok http 3000
+# 生成された https URL を Webhook に設定
+```
+
+## 動作
+- 画像メッセージ: 画像を取得 → OpenAI Vision (gpt-4o-mini) で解析 → 解説テキストを返信
+- テキストメッセージ: 直接 OpenAI に投げて解説を返信
+
+## デプロイ例（Railway）
+- Build Command: `npm install`
+- Start Command: `npm start`
+- Environment: Node 18, `.env` を環境変数に

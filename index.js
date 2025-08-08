@@ -1,132 +1,121 @@
-// ===== Kumao One-Shot Bot (最小・解説のみ) =====
-// LINE → 画像 or テキスト を受けたら、1回の解説だけ返す。会話/状態管理なし。
-// ENV: CHANNEL_SECRET / CHANNEL_ACCESS_TOKEN / OPENAI_API_KEY
-// OPT: VERIFY_SIGNATURE ("true"|"false"), OAI_MODEL (default "gpt-4o")
+import 'dotenv/config'
+import express from 'express'
+import { middleware, Client } from '@line/bot-sdk'
+import OpenAI from 'openai'
 
-import express from "express";
-import crypto from "crypto";
-
-// ===== ENV =====
 const {
-  PORT = 3000,
-  CHANNEL_SECRET,
   CHANNEL_ACCESS_TOKEN,
+  CHANNEL_SECRET,
   OPENAI_API_KEY,
-  VERIFY_SIGNATURE = "true",
-  OAI_MODEL = "gpt-4o",
-} = process.env;
+  PORT = 3000
+} = process.env
 
-if (!CHANNEL_SECRET || !CHANNEL_ACCESS_TOKEN) {
-  console.error("Missing LINE env: CHANNEL_SECRET / CHANNEL_ACCESS_TOKEN");
-  process.exit(1);
-}
-if (!OPENAI_API_KEY) {
-  console.error("Missing OPENAI_API_KEY");
-  process.exit(1);
+if (!CHANNEL_ACCESS_TOKEN || !CHANNEL_SECRET || !OPENAI_API_KEY) {
+  console.error('Missing env. Please set CHANNEL_ACCESS_TOKEN, CHANNEL_SECRET, OPENAI_API_KEY')
+  process.exit(1)
 }
 
-// ===== Helpers =====
-const LINE_API_BASE = "https://api.line.me/v2/bot";
-const textMsgs = (arr) => (Array.isArray(arr) ? arr : [arr]).map((t) => ({ type: "text", text: t }));
-const chunk = (s, n=900) => { const out=[]; let r=s||""; while(r.length>n){out.push(r.slice(0,n)); r=r.slice(n);} if(r) out.push(r); return out; };
-
-async function linePush(to, messages){
-  const res = await fetch(`${LINE_API_BASE}/message/push`, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json", Authorization:`Bearer ${CHANNEL_ACCESS_TOKEN}` },
-    body: JSON.stringify({ to, messages }),
-  });
-  if (!res.ok) console.error("linePush", res.status, await res.text());
+const config = {
+  channelAccessToken: CHANNEL_ACCESS_TOKEN,
+  channelSecret: CHANNEL_SECRET
 }
 
-// ===== OpenAI =====
-const NO_LATEX = `
-【表記ルール】数式はLaTeX禁止。通常のテキスト表記で書くこと。
-例: x^2+3x-4=0, 1/2, sqrt(3), a/b
-「\\frac」「\\sqrt」「\\(\\)」「$$」などは禁止。
-`;
+const app = express()
+const client = new Client(config)
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY })
 
-async function oaiChat(payload){
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method:"POST",
-    headers:{ "Content-Type":"application/json", Authorization:`Bearer ${OPENAI_API_KEY}` },
-    body: JSON.stringify(payload)
-  });
-  const data = await res.json().catch(()=>({}));
-  if(!res.ok){ console.error("OpenAI", res.status, data); throw new Error("OpenAI error"); }
-  return data?.choices?.[0]?.message?.content?.trim() || "";
-}
+app.get('/', (req, res) => {
+  res.status(200).send('StudyEye LINE bot is running.')
+})
 
-async function explainFromImage(dataUrl){
-  const prompt = `
-あなたは優しい家庭教師くまお先生。画像の問題文を読み取り、要点をつかんだうえで「一回で」分かる解説を短く出す。
-- まず要約1-2行 → すぐに解き方のコア手順を箇条書き3-6行 → 最後にワンポイント注意1行。
-- 日本語で簡潔に。式は最小限。${NO_LATEX}
-  `;
-  return oaiChat({
-    model: OAI_MODEL,
-    messages:[{ role:"user", content:[
-      { type:"text", text: prompt },
-      { type:"image_url", image_url:{ url: dataUrl } }
-    ]}],
-    temperature:0.2
-  });
-}
+app.post('/webhook', middleware(config), async (req, res) => {
+  Promise
+    .all(req.body.events.map(handleEvent))
+    .then((result) => res.json(result))
+    .catch((err) => {
+      console.error('Webhook error:', err)
+      res.status(500).end()
+    })
+})
 
-async function explainFromText(q){
-  const prompt = `
-あなたは優しい家庭教師くまお先生。次の質問を「一回で」わかる解説にしよう。
-- 要点サマリ1-2行 → 手順の箇条書き3-6行 → 注意点1行。日本語。式は最小限。${NO_LATEX}
-質問:
-${q}
-  `;
-  return oaiChat({ model: OAI_MODEL, messages:[{ role:"user", content: prompt }], temperature:0.3 });
-}
+async function handleEvent(event) {
+  try {
+    if (event.type !== 'message') return Promise.resolve(null)
 
-// ===== App =====
-const app = express();
-app.use(express.json({ verify: (req,_res,buf)=>{ req.rawBody = buf; } }));
+    if (event.message.type === 'image') {
+      const messageId = event.message.id
+      const imageB64 = await fetchImageAsBase64(messageId)
 
-app.get("/", (_req,res)=>res.send("kumao oneshot up"));
+      const system = 'あなたは優秀な先生です。画像は生徒の質問（数学・理科・英語など）です。' +
+                     '手順を分かりやすく、箇条書きで日本語で説明してください。式はテキストで、' +
+                     '無理に難しい記号は使わず、中高生が理解できる表現にしてください。'
 
-app.post("/webhook", async (req,res)=>{
-  try{
-    if (VERIFY_SIGNATURE !== "false"){
-      const sig = req.headers["x-line-signature"];
-      const hash = crypto.createHmac("sha256", CHANNEL_SECRET).update(req.rawBody).digest("base64");
-      if (hash !== sig) return res.status(403).send("forbidden");
+      const userInstruction = 'この画像の問題を読み取り、必要なら簡潔に要約し、' +
+                              'その後に解き方のステップを番号付きで説明して。最後に「要点まとめ」を3つ。'
+
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user',
+            content: [
+              { type: 'text', text: userInstruction },
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageB64}` } }
+            ]
+          }
+        ]
+      })
+
+      const answer = completion.choices?.[0]?.message?.content?.trim() || 'うまく解析できませんでした。もう一度撮影して送ってください。'
+
+      return client.replyMessage(event.replyToken, { type: 'text', text: answer })
     }
-  }catch{ /* noop */ }
-  // すぐACK（処理は後でpush）
-  res.status(200).end();
 
-  const events = req.body?.events || [];
-  for (const ev of events){
-    if (ev.type !== "message") continue;
-    const userId = ev.source?.userId;
-    const msg = ev.message;
-    try {
-      if (msg.type === "image"){
-        const r = await fetch(`${LINE_API_BASE}/message/${msg.id}/content`, {
-          headers:{ Authorization:`Bearer ${CHANNEL_ACCESS_TOKEN}` }
-        });
-        if (!r.ok) throw new Error("getContent failed: "+await r.text());
-        const ab = await r.arrayBuffer(); const buf = Buffer.from(ab);
-        const base64 = buf.toString("base64");
-        const ctype = r.headers.get("content-type") || "image/jpeg";
-        const dataUrl = `data:${ctype};base64,${base64}`;
-
-        const out = await explainFromImage(dataUrl);
-        await linePush(userId, textMsgs(chunk(out)));
-      } else if (msg.type === "text"){
-        const out = await explainFromText((msg.text||"").trim());
-        await linePush(userId, textMsgs(chunk(out)));
+    if (event.message.type === 'text') {
+      const text = (event.message.text || '').trim()
+      if (/help|使い方|ヘルプ/i.test(text)) {
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: '写真で問題を送ってください。私が解き方を解説します。文字だけの質問もOKです。'
+        })
       }
-    } catch(e){
-      console.error("handle error:", e?.stack || e);
-      await linePush(userId, textMsgs("うまく解説できなかった…画像は“その場で送信”、テキストはもう一度送ってね。"));
-    }
-  }
-});
 
-app.listen(PORT, ()=>console.log(`kumao oneshot listening on :${PORT}, model=${OAI_MODEL}`));
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: 'あなたは優秀な先生です。中高生にも分かるように丁寧に日本語で解説してください。' },
+          { role: 'user', content: text }
+        ]
+      })
+      const answer = completion.choices?.[0]?.message?.content?.trim() || '回答を生成できませんでした。'
+      return client.replyMessage(event.replyToken, { type: 'text', text: answer })
+    }
+
+    return Promise.resolve(null)
+  } catch (e) {
+    console.error('handleEvent error:', e)
+    try {
+      await client.replyMessage(event.replyToken, { type: 'text', text: 'すみません、処理中にエラーが起きました。もう一度お試しください。' })
+    } catch (_) {}
+    return null
+  }
+}
+
+async function fetchImageAsBase64(messageId) {
+  const res = await client.getMessageContent(messageId)
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    res.on('data', (chunk) => chunks.push(chunk))
+    res.on('end', () => {
+      const buffer = Buffer.concat(chunks)
+      resolve(buffer.toString('base64'))
+    })
+    res.on('error', reject)
+  })
+}
+
+app.listen(PORT, () => {
+  console.log(`Server listening on http://0.0.0.0:${PORT}`)
+})
