@@ -1,31 +1,27 @@
-# eternal_final_hybrid_v5（神仕様）
 
-## できること
-- くまお先生の**やさしい解説（テキスト）**
-- **数式は黒板風の画像**でくっきり（シャープな数学フォント）
-- **最後に【答え】** を一行で明記
-- 画像問題（スクショ・アルバム保存）にも対応
+# eternal_final_science_v6（最終完成形）
 
-## 必要な環境変数（Railway Variables）
+## 特徴
+- **LINEで崩れない数式・理科記号**（LaTeXは禁止し、Unicode/読みやすい記号に自動整形）
+- **必要時のみ黒板画像**：<LATEX> ... </LATEX> があると、その部分だけ黒板PNGを生成して添付
+- **くまお先生口調**で段階的に解説、最後は必ず **【答え】一行**
+- 物理/化学/生物の単位・ギリシャ文字もOK（Ω, µ, Δ, θ, λ, °C など）
+
+## 環境変数（Railway Variables）
 ```
 CHANNEL_ACCESS_TOKEN=
 CHANNEL_SECRET=
 OPENAI_API_KEY=
-PUBLIC_BASE_URL= https://<your-app>.up.railway.app   # 任意（未設定でも自動推定）
+PUBLIC_BASE_URL=https://<your-app>.up.railway.app  # 任意（推奨）
 ```
 
 ## デプロイ
 ```
 npm i
-npm start  # /healthz が 200 になればOK
+npm start  # /healthz が 200 ならOK
 ```
-Railwayにアップ → Variables設定 → Webhook: `https://<your-app>.up.railway.app/webhook`
+Webhook: `https://<your-app>.up.railway.app/webhook`
 
 ## 使い方
-- **テキスト質問**：解説（番号つき）＋【答え】、必要なら数式画像を添付
-- **画像質問**：画像の内容を解析して、同様に解説＋数式画像＋【答え】
-
-## メモ
-- テキストにはLaTeXを使いません（読みやすい記号表記）
-- 画像内の数式は内部的にLaTeXで描画（MathJax → SVG → PNG）
-- 画像は `/public/boards/*.png` として配信されます
+- 通常は**テキストだけ**で読みやすく返答
+- 複雑な式がある場合、回答の最後に **<LATEX> ... </LATEX>** を付けるようプロンプト済み → 黒板画像が自動添付

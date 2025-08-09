@@ -1,7 +1,7 @@
 {
-  "name": "kumao-bot-hybrid-v5",
-  "version": "4.0.0",
-  "description": "Kumao-sensei LINE Bot (text + chalkboard math image)",
+  "name": "kumao-bot-science-v6",
+  "version": "4.1.0",
+  "description": "Kumao-sensei LINE Bot - text-first (LaTeX-free) with optional chalkboard image, science symbols ready",
   "main": "index.js",
   "type": "commonjs",
   "engines": {
