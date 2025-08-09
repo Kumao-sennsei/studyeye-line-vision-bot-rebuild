@@ -1,19 +1,11 @@
-# eternal_final_hotfix_v2
+# eternal_final_hotfix_v3
 
-### 追加点
-- くまお先生の口調（やさしく面白くわかりやすく、絵文字ほどほど）を強化
-- **最後に必ず「【答え】…」を明記**（未出時はワンライン要約を自動付与）
-- **LaTeX禁止**の数式整形（sqrt(), x^2, ∫ f(x) dx, a/b など）
+### 変更点
+- 数学表記の視認性を改善（sqrt(...) → √(...), 演算子のスペース挿入）
+- くまお先生トーン強化（絵文字はほどほど）
+- 必ず最後に【答え】… を1行で明記（未出時は自動付与）
 
-### 必要な環境変数（Railway Variables）
-```
-CHANNEL_ACCESS_TOKEN=
-CHANNEL_SECRET=
-OPENAI_API_KEY=
-```
-（互換: LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET も読めます）
-
-### デプロイ
-1) 依存: `npm i`  
-2) 起動: `npm start` → `/healthz` = 200  
-3) Webhook: `https://<your-app>.up.railway.app/webhook`
+### 使い方
+1) Variables: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY  
+2) `npm i` → `npm start`（/healthz = 200）  
+3) Webhook: `https://<app>.up.railway.app/webhook`
