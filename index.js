@@ -1,93 +1,97 @@
-const line = require('@line/bot-sdk');
-const express = require('express');
-const axios = require('axios');
+// index.js
+import express from "express";
+import line from "@line/bot-sdk";
+import fetch from "node-fetch";
 
+// ====== 環境変数読み込み ======
 const config = {
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET
+  channelAccessToken:
+    process.env.CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret:
+    process.env.CHANNEL_SECRET || process.env.LINE_CHANNEL_SECRET,
 };
 
+const openaiApiKey = process.env.OPENAI_API_KEY;
+
+if (!config.channelAccessToken || !config.channelSecret) {
+  console.error("❌ Channel Access Token または Secret が設定されていません");
+  process.exit(1);
+}
+if (!openaiApiKey) {
+  console.error("❌ OPENAI_API_KEY が設定されていません");
+  process.exit(1);
+}
+
+// ====== LINE クライアント作成 ======
 const client = new line.Client(config);
 const app = express();
 
-app.post('/webhook', line.middleware(config), async (req, res) => {
-  Promise
-    .all(req.body.events.map(handleEvent))
-    .then(result => res.json(result))
-    .catch(err => {
-      console.error(err);
-      res.status(500).end();
-    });
-});
-
-async function handleEvent(event) {
-  if (event.type !== 'message') return;
-  
-  if (event.message.type === 'text') {
-    return handleText(event);
-  } else if (event.message.type === 'image') {
-    return handleImage(event);
-  }
-}
-
-async function handleText(event) {
-  const question = event.message.text;
-  const answer = await getKumaoAnswer(question);
-
-  return client.replyMessage(event.replyToken, {
-    type: 'text',
-    text: answer
-  });
-}
-
-async function handleImage(event) {
-  const messageContent = await client.getMessageContent(event.message.id);
-  let chunks = [];
-  messageContent.on('data', chunk => chunks.push(chunk));
-  messageContent.on('end', async () => {
-    const imgBuffer = Buffer.concat(chunks);
-    const base64Img = imgBuffer.toString('base64');
-    
-    const answer = await getKumaoAnswer(`画像から読み取った問題を解説して: ${base64Img}`);
-    await client.replyMessage(event.replyToken, {
-      type: 'text',
-      text: answer
-    });
-  });
-}
-
-async function getKumaoAnswer(question) {
+// ====== 署名検証とJSONパース ======
+app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
-    const prompt = `
-あなたは「神仙人くまお先生」です。やさしく・面白く・わかりやすく解説します。
-重要部分は 🔶、公式は 🔷、答えは 🟧 で示してください。
-数式は LaTeX を使わず、わかりやすいテキスト表記にしてください。
-途中式は省略せず、文章で補足しながら書いてください。
-  
-質問: ${question}
-`;
-
-    const response = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }]
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-        }
-      }
-    );
-
-    return response.data.choices[0].message.content.trim();
+    const events = req.body.events;
+    await Promise.all(events.map(handleEvent));
+    res.status(200).end();
   } catch (err) {
     console.error(err);
-    return 'ごめんね、解説でちょっとつまづいたみたい…もう一度試してみて！(●´ω｀●)';
+    res.status(500).end();
+  }
+});
+
+// ====== イベント処理 ======
+async function handleEvent(event) {
+  if (event.type !== "message" || event.message.type !== "text") {
+    return;
+  }
+
+  const userMessage = event.message.text;
+  const replyToken = event.replyToken;
+
+  try {
+    // OpenAI APIへ送信
+    const aiReply = await getOpenAIResponse(userMessage);
+
+    // LINEに返信
+    await client.replyMessage(replyToken, {
+      type: "text",
+      text: aiReply,
+    });
+  } catch (err) {
+    console.error("返信エラー:", err);
+    await client.replyMessage(replyToken, {
+      type: "text",
+      text: "エラーが発生しました…(；ω；)",
+    });
   }
 }
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log('Kumao-sensei bot is running!');
+// ====== OpenAIへの問い合わせ ======
+async function getOpenAIResponse(userMessage) {
+  const apiUrl = "https://api.openai.com/v1/chat/completions";
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "あなたは優しく面白いくまお先生です。絵文字も適度に入れて回答します。" },
+        { role: "user", content: userMessage },
+      ],
+    }),
+  });
+
+  const data = await response.json();
+  if (data.error) {
+    throw new Error(data.error.message);
+  }
+  return data.choices[0].message.content.trim();
+}
+
+// ====== サーバー起動 ======
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`🚀 Server running on port ${port}`);
 });
