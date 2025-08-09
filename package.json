@@ -1,7 +1,7 @@
 {
-  "name": "kumao-bot-final-hotfix",
-  "version": "3.0.1",
-  "description": "Kumao-sensei LINE Bot (env var hotfix for user's names)",
+  "name": "kumao-bot-final-hotfix-v2",
+  "version": "3.1.0",
+  "description": "Kumao-sensei LINE Bot with explicit answer block and math sanitization",
   "main": "index.js",
   "type": "commonjs",
   "engines": {

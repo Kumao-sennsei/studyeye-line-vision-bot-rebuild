@@ -1,15 +1,19 @@
-# eternal_final_hotfix
+# eternal_final_hotfix_v2
 
-環境変数名を **CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY** に合わせた版。  
-（互換として LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET も読めます）
+### 追加点
+- くまお先生の口調（やさしく面白くわかりやすく、絵文字ほどほど）を強化
+- **最後に必ず「【答え】…」を明記**（未出時はワンライン要約を自動付与）
+- **LaTeX禁止**の数式整形（sqrt(), x^2, ∫ f(x) dx, a/b など）
 
-## セットアップ
-1) `.env` に下記を記入
+### 必要な環境変数（Railway Variables）
 ```
-CHANNEL_ACCESS_TOKEN=xxxxxxxx
-CHANNEL_SECRET=xxxxxxxx
-OPENAI_API_KEY=sk-xxxxxxxx
+CHANNEL_ACCESS_TOKEN=
+CHANNEL_SECRET=
+OPENAI_API_KEY=
 ```
-2) `npm i` → `npm start`
-3) Railwayにデプロイ → Variables に同じ3つを登録
-4) Webhook URL: `https://<railway-app>.up.railway.app/webhook`
+（互換: LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET も読めます）
+
+### デプロイ
+1) 依存: `npm i`  
+2) 起動: `npm start` → `/healthz` = 200  
+3) Webhook: `https://<your-app>.up.railway.app/webhook`
