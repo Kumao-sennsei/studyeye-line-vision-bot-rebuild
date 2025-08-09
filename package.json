@@ -1,1 +1,16 @@
-{ "name": "kumao-bot", "version": "1.0.0" }
+{
+  "name": "kumao-bot",
+  "version": "2.0.0",
+  "description": "Minimal Express server for Railway (eternal_v2)",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
