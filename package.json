@@ -1,22 +1,15 @@
 {
-  "name": "kumao-bot-science-v6",
-  "version": "4.1.0",
-  "description": "Kumao-sensei LINE Bot - text-first (LaTeX-free) with optional chalkboard image, science symbols ready",
+  "name": "kumao-bot-science-v6_1-textonly",
+  "version": "4.1.1",
+  "description": "Kumao-sensei LINE Bot - text-first with strong LaTeX->Unicode sanitizer (no heavy deps)",
   "main": "index.js",
   "type": "commonjs",
-  "engines": {
-    "node": ">=18"
-  },
-  "scripts": {
-    "start": "node index.js"
-  },
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
-    "express": "^4.19.2",
-    "body-parser": "^1.20.2",
     "axios": "^1.6.7",
+    "body-parser": "^1.20.2",
     "dotenv": "^16.4.5",
-    "mathjax-full": "^3.2.2",
-    "sharp": "^0.33.3",
-    "uuid": "^9.0.1"
+    "express": "^4.19.2"
   }
 }
