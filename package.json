@@ -1,15 +1,1 @@
-{
-  "name": "kumao-rollback-like",
-  "version": "1.0.2",
-  "type": "module",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "express": "^4.19.2"
-  }
-}
+{ "name": "kumao-bot", "version": "1.0.0" }
