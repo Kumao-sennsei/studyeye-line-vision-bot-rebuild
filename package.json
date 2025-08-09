@@ -1,7 +1,7 @@
 {
-  "name": "kumao-bot",
-  "version": "2.0.0",
-  "description": "Minimal Express server for Railway (eternal_v2)",
+  "name": "kumao-bot-final",
+  "version": "3.0.0",
+  "description": "Kumao-sensei LINE Bot with text and image explanation",
   "main": "index.js",
   "type": "commonjs",
   "engines": {
@@ -11,6 +11,9 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "body-parser": "^1.20.2",
+    "axios": "^1.6.7",
+    "dotenv": "^16.4.5"
   }
 }
