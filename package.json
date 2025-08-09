@@ -1,7 +1,7 @@
 {
-  "name": "kumao-bot-final",
-  "version": "3.0.0",
-  "description": "Kumao-sensei LINE Bot with text and image explanation",
+  "name": "kumao-bot-final-hotfix",
+  "version": "3.0.1",
+  "description": "Kumao-sensei LINE Bot (env var hotfix for user's names)",
   "main": "index.js",
   "type": "commonjs",
   "engines": {

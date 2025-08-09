@@ -1,8 +1,7 @@
 /**
- * eternal_final - Kumao-sensei Bot (Text + Image 解説)
- * - LINE Messaging API Webhook
- * - OpenAI API (GPT-4o) for text & image analysis
- * - Fun, kind, and clear explanations
+ * eternal_final (hotfix) - Env names aligned to user's convention
+ * Uses: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY
+ * Also supports legacy: LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET
  */
 
 const express = require('express');
@@ -13,15 +12,21 @@ require('dotenv').config();
 const app = express();
 app.use(bodyParser.json());
 
-const LINE_CHANNEL_ACCESS_TOKEN = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET; // currently unused, but kept for verification
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// ---- Env names (user-first) ----
+const CHANNEL_ACCESS_TOKEN =
+  process.env.CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+const CHANNEL_SECRET =
+  process.env.CHANNEL_SECRET || process.env.LINE_CHANNEL_SECRET;
+
+const OPENAI_API_KEY =
+  process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || process.env.OPENAI_API;
 
 const PORT = process.env.PORT || 3000;
 
 // Verify env vars
-if (!LINE_CHANNEL_ACCESS_TOKEN || !LINE_CHANNEL_SECRET || !OPENAI_API_KEY) {
-  console.error("❌ Missing environment variables. Check .env file.");
+if (!CHANNEL_ACCESS_TOKEN || !CHANNEL_SECRET || !OPENAI_API_KEY) {
+  console.error("❌ Missing environment variables. Need CHANNEL_ACCESS_TOKEN, CHANNEL_SECRET, OPENAI_API_KEY.");
   process.exit(1);
 }
 
@@ -31,7 +36,7 @@ async function replyToLine(replyToken, messages) {
     await axios.post(
       'https://api.line.me/v2/bot/message/reply',
       { replyToken, messages },
-      { headers: { Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}` } }
+      { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } }
     );
   } catch (err) {
     console.error("LINE Reply Error:", err.response?.data || err.message);
@@ -49,14 +54,14 @@ async function getTextResponse(userText) {
           { role: 'system', content: 'あなたは「くまお先生」です。絵文字はほどほどに、楽しく、面白く、やさしく、わかりやすく説明してください。' },
           { role: 'user', content: userText }
         ],
-        temperature: 0.5
+        temperature: 0.4
       },
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
     return resp.data.choices[0].message.content.trim();
   } catch (err) {
     console.error("OpenAI Text Error:", err.response?.data || err.message);
-    return "今日はちょっと調子が悪いみたい💦 また試してみてね！";
+    return "今日はちょっと調子が悪いみたい。また試してみてね！";
   }
 }
 
@@ -78,20 +83,20 @@ async function getImageAnalysis(imageBuffer) {
             ]
           }
         ],
-        temperature: 0.5
+        temperature: 0.4
       },
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
     return resp.data.choices[0].message.content.trim();
   } catch (err) {
     console.error("OpenAI Image Error:", err.response?.data || err.message);
-    return "画像が恥ずかしがってるみたい💦 また送ってみてね！";
+    return "画像を読み込めなかったよ。もう一度送ってみてね！";
   }
 }
 
 // Webhook endpoint
 app.post('/webhook', async (req, res) => {
-  const events = req.body.events;
+  const events = req.body.events || [];
   for (const event of events) {
     if (event.type === 'message') {
       const message = event.message;
@@ -104,7 +109,7 @@ app.post('/webhook', async (req, res) => {
           const contentResp = await axios.get(
             `https://api-data.line.me/v2/bot/message/${message.id}/content`,
             {
-              headers: { Authorization: `Bearer ${LINE_CHANNEL_ACCESS_TOKEN}` },
+              headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
               responseType: 'arraybuffer'
             }
           );
@@ -112,10 +117,10 @@ app.post('/webhook', async (req, res) => {
           await replyToLine(event.replyToken, [{ type: 'text', text: replyText }]);
         } catch (err) {
           console.error("Image Fetch Error:", err.response?.data || err.message);
-          await replyToLine(event.replyToken, [{ type: 'text', text: "画像を取得できなかったよ💦 もう一度送ってみてね！" }]);
+          await replyToLine(event.replyToken, [{ type: 'text', text: "画像を取得できなかったよ。もう一度送ってみてね！" }]);
         }
       } else {
-        await replyToLine(event.replyToken, [{ type: 'text', text: "今はテキストと画像だけに対応してるよ📚" }]);
+        await replyToLine(event.replyToken, [{ type: 'text', text: "今はテキストと画像だけに対応してるよ。" }]);
       }
     }
   }
@@ -129,5 +134,5 @@ app.get('/healthz', (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🐻 Kumao-sensei bot listening on port ${PORT}`);
+  console.log(`🐻 Kumao-sensei bot (hotfix) listening on port ${PORT}`);
 });
