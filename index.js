@@ -1,10 +1,10 @@
 /**
- * eternal_final (hotfix v3) - Readability upgrade
- * - Env names: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY (primary)
- *   + legacy LINE_CHANNEL_* supported
- * - Kumao-sensei tone (gentle, fun, clear; emoji moderate)
- * - Always ends with 【答え】... one-line
- * - Math readability: LaTeX stripped, sqrt(...) -> √(...), operator spacing
+ * eternal_final (hotfix v4) - Option ①: Text-only readability & clarity
+ * - Env: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY (+ legacy LINE_* supported)
+ * - Kumao-sensei tone; emoji moderate
+ * - Step-by-step with numbered steps and explicit "何をしているか"
+ * - Fractions as (num)/(den), sqrt(...) -> √(...), operator spacing, integral [a→b]
+ * - Always ends with one-line 【答え】 simplified (数値化 or既約分数)
  */
 
 const express = require('express');
@@ -15,13 +15,10 @@ require('dotenv').config();
 const app = express();
 app.use(bodyParser.json());
 
-// ---- Env vars (user naming first) ----
 const CHANNEL_ACCESS_TOKEN =
   process.env.CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN;
-
 const CHANNEL_SECRET =
   process.env.CHANNEL_SECRET || process.env.LINE_CHANNEL_SECRET;
-
 const OPENAI_API_KEY =
   process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || process.env.OPENAI_API;
 
@@ -36,68 +33,74 @@ if (!CHANNEL_ACCESS_TOKEN || !CHANNEL_SECRET || !OPENAI_API_KEY) {
 const STYLE_PROMPT = [
   "あなたは『くまお先生』です。",
   "口調: やさしく・面白く・わかりやすく。絵文字はほどほど。",
-  "厳守:",
-  "1) 説明は段階的に。",
-  "2) 数式はLaTeX禁止。√, x^2, a/b, ∫ f(x) dx を使う。",
-  "3) 最後に必ず「【答え】...」を1行で明記。"
+  "出力ルール:",
+  "1) 何をしているかを日本語で明記しながら、番号つきで段階的に説明（1. 2. 3. ...）。",
+  "2) 数式はLaTeX禁止。次の表記に統一:",
+  "   - ルート: √(x)",
+  "   - 二乗: x^2、三乗: x^3",
+  "   - 分数: (分子)/(分母)",
+  "   - 積分: ∫[a→b] f(x) dx",
+  "   - 微分: d/dx f(x)",
+  "   - 演算子の前後にはスペースを入れる (= + - × ÷ /)",
+  "3) 最後に必ず一行で「【答え】...」を明記。可能なら数値化または既約分数で簡約。"
 ].join("\n");
 
-// ---- Readability helpers ----
-function sanitizeLatex(text) {
-  if (!text) return text;
-  let s = text;
+// ---- Text filters ----
+function sanitizeLatex(s) {
+  if (!s) return s;
   s = s.replace(/\$\$?/g, "");
   s = s.replace(/\\sqrt\{([^{}]+)\}/g, "sqrt($1)");
-  s = s.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "$1/$2");
+  s = s.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)");
   s = s.replace(/\^\{([^{}]+)\}/g, "^$1");
   s = s.replace(/\\cdot/g, "×");
   s = s.replace(/\\times/g, "×");
   s = s.replace(/\\int/g, "∫");
-  s = s.replace(/\\(rightarrow|to)/g, "->");
   return s;
 }
 
-function improveMathReadability(text) {
-  if (!text) return text;
-  let s = text;
+function improveMathReadability(s) {
+  if (!s) return s;
+  let t = s;
 
   // sqrt(...) -> √(...)
-  s = s.replace(/sqrt\(([^\(\)]+)\)/g, "√($1)");
+  t = t.replace(/sqrt\(([^\(\)]+)\)/g, "√($1)");
 
-  // Add spaces around operators when it's likely an infix op (left side is number/letter/close paren)
-  // =, +, -, ×, ÷, /
-  s = s.replace(/([0-9A-Za-z\)\]])([=\+\-×÷\/])([0-9A-Za-z\(\[])/g, "$1 $2 $3");
+  // Space around operators between tokens
+  t = t.replace(/([0-9A-Za-z\)\]])([=\+\-×÷\/])([0-9A-Za-z\(\[])/g, "$1 $2 $3");
 
-  // Collapse multiple spaces
-  s = s.replace(/[ \t]+/g, " ");
+  // ∫ [aからb] or [a→b]
+  t = t.replace(/∫\s*\[\s*([0-9\-\+\w]+)\s*(から|→)\s*([0-9\-\+\w]+)\s*\]/g, "∫[$1→$3]");
 
-  // Ensure 【答え】 block has a blank line before it (for visibility)
-  s = s.replace(/\n?【答え】/g, "\n\n【答え】");
+  // Ensure fractions have parentheses when simple tokens like a/b or (expr)/(expr)
+  t = t.replace(/(\b[^\s\(\)]+)\s*\/\s*([^\s\(\)]+\b)/g, "($1)/($2)");
 
-  return s.trim();
+  // Collapse spaces
+  t = t.replace(/[ \t]+/g, " ");
+  // Improve answer visibility
+  t = t.replace(/\n?【答え】/g, "\n\n【答え】");
+
+  return t.trim();
 }
 
-async function ensureAnswerBlock(bodyText) {
+async function ensureAnswerLine(bodyText) {
   if (!bodyText) return bodyText;
-  if (bodyText.includes("【答え】")) {
-    return bodyText;
-  }
+  if (bodyText.includes("【答え】")) return bodyText;
   try {
     const resp = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
         model: 'gpt-4o-mini',
         messages: [
-          { role: 'system', content: '次の文章の最終結論を日本語で一行にまとめ、「【答え】...」の形式で返してください。数式はLaTeX禁止で、√, x^2, a/b を使う。' },
+          { role: 'system', content: '以下の解説の最終結論を日本語で一行にまとめ、「【答え】...」の形式で返してください。数式はLaTeX禁止で、√(), x^2, (a)/(b) を使う。できれば数値を簡約して。' },
           { role: 'user', content: bodyText }
         ],
         temperature: 0
       },
       { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
     );
-    const oneLine = resp.data.choices[0].message.content.trim();
-    return bodyText + "\n\n" + improveMathReadability(oneLine);
-  } catch (err) {
+    const line = resp.data.choices[0].message.content.trim();
+    return bodyText + "\n\n" + improveMathReadability(line);
+  } catch {
     return bodyText + "\n\n【答え】（本文の結論を一行で要約）";
   }
 }
@@ -115,8 +118,8 @@ async function replyToLine(replyToken, messages) {
   }
 }
 
-// ---- OpenAI call ----
-async function openaiChat(messages, model='gpt-4o', temperature=0.4) {
+// ---- OpenAI ----
+async function openaiChat(messages, model='gpt-4o', temperature=0.3) {
   const resp = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     { model, messages, temperature },
@@ -125,40 +128,40 @@ async function openaiChat(messages, model='gpt-4o', temperature=0.4) {
   return resp.data.choices[0].message.content.trim();
 }
 
-async function getTextResponse(userText) {
+async function handleText(userText) {
   try {
     const raw = await openaiChat([
       { role: 'system', content: STYLE_PROMPT },
       { role: 'user', content: userText }
     ]);
-    const cleaned = sanitizeLatex(raw);
-    const readable = improveMathReadability(cleaned);
-    return await ensureAnswerBlock(readable);
-  } catch (err) {
-    console.error("OpenAI Text Error:", err.response?.data || err.message);
-    return "今日はちょっと調子が悪いみたい。また試してみてね！";
+    const s1 = sanitizeLatex(raw);
+    const s2 = improveMathReadability(s1);
+    return await ensureAnswerLine(s2);
+  } catch (e) {
+    console.error("Text error:", e.response?.data || e.message);
+    return "今日はちょっと調子が悪いみたい。また少し時間をおいて試してみてね！";
   }
 }
 
-async function getImageAnalysis(imageBuffer) {
+async function handleImage(imageBuffer) {
   try {
-    const base64Image = imageBuffer.toString('base64');
+    const base64 = imageBuffer.toString('base64');
     const raw = await openaiChat([
       { role: 'system', content: STYLE_PROMPT },
       {
         role: 'user',
         content: [
-          { type: 'text', text: 'この画像を解析して、やさしく面白くわかりやすく解説してください。最後に【答え】を一行で明記。数式はLaTeX禁止。' },
-          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Image}` } }
+          { type: 'text', text: 'この画像の問題を解いて、何をしているかを日本語で明記しながら番号つきで解説してください。最後に【答え】を一行で明記。数式はLaTeX禁止（√(), (a)/(b), ∫[a→b] f(x) dx）。' },
+          { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } }
         ]
       }
     ]);
-    const cleaned = sanitizeLatex(raw);
-    const readable = improveMathReadability(cleaned);
-    return await ensureAnswerBlock(readable);
-  } catch (err) {
-    console.error("OpenAI Image Error:", err.response?.data || err.message);
-    return "画像を読み込めなかったよ。もう一度送ってみてね！";
+    const s1 = sanitizeLatex(raw);
+    const s2 = improveMathReadability(s1);
+    return await ensureAnswerLine(s2);
+  } catch (e) {
+    console.error("Image error:", e.response?.data || e.message);
+    return "画像をうまく読めなかったよ。もう一度送ってみてね！";
   }
 }
 
@@ -167,38 +170,30 @@ app.post('/webhook', async (req, res) => {
   const events = req.body.events || [];
   for (const event of events) {
     if (event.type === 'message') {
-      const message = event.message;
-      if (message.type === 'text') {
-        const replyText = await getTextResponse(message.text);
+      const m = event.message;
+      if (m.type === 'text') {
+        const replyText = await handleText(m.text);
         await replyToLine(event.replyToken, [{ type: 'text', text: replyText }]);
-      } else if (message.type === 'image') {
+      } else if (m.type === 'image') {
         try {
-          const contentResp = await axios.get(
-            `https://api-data.line.me/v2/bot/message/${message.id}/content`,
-            {
-              headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
-              responseType: 'arraybuffer'
-            }
+          const content = await axios.get(
+            `https://api-data.line.me/v2/bot/message/${m.id}/content`,
+            { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` }, responseType: 'arraybuffer' }
           );
-          const replyText = await getImageAnalysis(Buffer.from(contentResp.data));
+          const replyText = await handleImage(Buffer.from(content.data));
           await replyToLine(event.replyToken, [{ type: 'text', text: replyText }]);
-        } catch (err) {
-          console.error("Image Fetch Error:", err.response?.data || err.message);
-          await replyToLine(event.replyToken, [{ type: 'text', text: "画像を取得できなかったよ。もう一度送ってみてね！" }]);
+        } catch (e) {
+          console.error("Fetch image error:", e.response?.data || e.message);
+          await replyToLine(event.replyToken, [{ type: 'text', text: "画像の取得に失敗しました。もう一度送ってみてね！" }]);
         }
       } else {
-        await replyToLine(event.replyToken, [{ type: 'text', text: "今はテキストと画像だけに対応してるよ。" }]);
+        await replyToLine(event.replyToken, [{ type: 'text', text: "今はテキストと画像メッセージに対応してるよ。" }]);
       }
     }
   }
   res.sendStatus(200);
 });
 
-// ---- Health ----
-app.get('/healthz', (req, res) => {
-  res.status(200).json({ ok: true, uptime: process.uptime() });
-});
+app.get('/healthz', (req, res) => res.status(200).json({ ok: true, uptime: process.uptime() }));
 
-app.listen(PORT, () => {
-  console.log(`🐻 Kumao-sensei bot (hotfix v3) listening on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🐻 Kumao-sensei bot (hotfix v4) listening on port ${PORT}`));

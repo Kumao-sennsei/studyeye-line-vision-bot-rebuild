@@ -1,7 +1,7 @@
 {
-  "name": "kumao-bot-final-hotfix-v3",
-  "version": "3.2.0",
-  "description": "Kumao-sensei LINE Bot with math readability upgrades and explicit answer line",
+  "name": "kumao-bot-final-hotfix-v4",
+  "version": "3.3.0",
+  "description": "Kumao-sensei LINE Bot - text only readability upgrades, step numbering, explicit answers",
   "main": "index.js",
   "type": "commonjs",
   "engines": {
