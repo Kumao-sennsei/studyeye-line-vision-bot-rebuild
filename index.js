@@ -1,19 +1,43 @@
 /**
- * eternal_final (hotfix v4) - Option ①: Text-only readability & clarity
- * - Env: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY (+ legacy LINE_* supported)
- * - Kumao-sensei tone; emoji moderate
- * - Step-by-step with numbered steps and explicit "何をしているか"
- * - Fractions as (num)/(den), sqrt(...) -> √(...), operator spacing, integral [a→b]
- * - Always ends with one-line 【答え】 simplified (数値化 or既約分数)
+ * eternal_final_hybrid_v5
+ * - Text explanation (Kumao-sensei tone, emoji moderate, LaTeX-free text)
+ * - Math image (dark chalkboard style) generated from a LaTeX block
+ * - Replies with: text + image (when complex math exists)
+ * - Env vars (user naming): CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY
+ *   Optional: PUBLIC_BASE_URL (e.g., https://your-app.up.railway.app)
  */
 
 const express = require('express');
 const bodyParser = require('body-parser');
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
+const { v4: uuidv4 } = require('uuid');
+const sharp = require('sharp');
 require('dotenv').config();
 
+// MathJax (SVG) setup
+const mj = require('mathjax-full/js/mathjax.js').mathjax;
+const TeX = require('mathjax-full/js/input/tex.js').TeX;
+const SVG = require('mathjax-full/js/output/svg.js').SVG;
+const liteAdaptor = require('mathjax-full/js/adaptors/liteAdaptor.js').liteAdaptor;
+const RegisterHTMLHandler = require('mathjax-full/js/handlers/html.js').RegisterHTMLHandler;
+
+const adaptor = liteAdaptor();
+RegisterHTMLHandler(adaptor);
+
+const tex = new TeX({
+  packages: ['base', 'ams', 'noerrors', 'noundefined'],
+});
+const svg = new SVG({
+  fontCache: 'none',
+  scale: 1.2,
+});
+const html = mj.document('', { InputJax: tex, OutputJax: svg });
+
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use('/public', express.static(path.join(__dirname, 'public')));
 
 const CHANNEL_ACCESS_TOKEN =
   process.env.CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN;
@@ -23,89 +47,21 @@ const OPENAI_API_KEY =
   process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || process.env.OPENAI_API;
 
 const PORT = process.env.PORT || 3000;
+const PUBLIC_BASE_URL_ENV = process.env.PUBLIC_BASE_URL;
 
 if (!CHANNEL_ACCESS_TOKEN || !CHANNEL_SECRET || !OPENAI_API_KEY) {
   console.error("❌ Missing environment variables. Need CHANNEL_ACCESS_TOKEN, CHANNEL_SECRET, OPENAI_API_KEY.");
   process.exit(1);
 }
 
-// ---- Style prompt ----
-const STYLE_PROMPT = [
-  "あなたは『くまお先生』です。",
-  "口調: やさしく・面白く・わかりやすく。絵文字はほどほど。",
-  "出力ルール:",
-  "1) 何をしているかを日本語で明記しながら、番号つきで段階的に説明（1. 2. 3. ...）。",
-  "2) 数式はLaTeX禁止。次の表記に統一:",
-  "   - ルート: √(x)",
-  "   - 二乗: x^2、三乗: x^3",
-  "   - 分数: (分子)/(分母)",
-  "   - 積分: ∫[a→b] f(x) dx",
-  "   - 微分: d/dx f(x)",
-  "   - 演算子の前後にはスペースを入れる (= + - × ÷ /)",
-  "3) 最後に必ず一行で「【答え】...」を明記。可能なら数値化または既約分数で簡約。"
-].join("\n");
-
-// ---- Text filters ----
-function sanitizeLatex(s) {
-  if (!s) return s;
-  s = s.replace(/\$\$?/g, "");
-  s = s.replace(/\\sqrt\{([^{}]+)\}/g, "sqrt($1)");
-  s = s.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)");
-  s = s.replace(/\^\{([^{}]+)\}/g, "^$1");
-  s = s.replace(/\\cdot/g, "×");
-  s = s.replace(/\\times/g, "×");
-  s = s.replace(/\\int/g, "∫");
-  return s;
+// ----- Helpers -----
+function buildPublicBaseUrl(req) {
+  if (PUBLIC_BASE_URL_ENV) return PUBLIC_BASE_URL_ENV.replace(/\/+$/, '');
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return `${proto}://${host}`;
 }
 
-function improveMathReadability(s) {
-  if (!s) return s;
-  let t = s;
-
-  // sqrt(...) -> √(...)
-  t = t.replace(/sqrt\(([^\(\)]+)\)/g, "√($1)");
-
-  // Space around operators between tokens
-  t = t.replace(/([0-9A-Za-z\)\]])([=\+\-×÷\/])([0-9A-Za-z\(\[])/g, "$1 $2 $3");
-
-  // ∫ [aからb] or [a→b]
-  t = t.replace(/∫\s*\[\s*([0-9\-\+\w]+)\s*(から|→)\s*([0-9\-\+\w]+)\s*\]/g, "∫[$1→$3]");
-
-  // Ensure fractions have parentheses when simple tokens like a/b or (expr)/(expr)
-  t = t.replace(/(\b[^\s\(\)]+)\s*\/\s*([^\s\(\)]+\b)/g, "($1)/($2)");
-
-  // Collapse spaces
-  t = t.replace(/[ \t]+/g, " ");
-  // Improve answer visibility
-  t = t.replace(/\n?【答え】/g, "\n\n【答え】");
-
-  return t.trim();
-}
-
-async function ensureAnswerLine(bodyText) {
-  if (!bodyText) return bodyText;
-  if (bodyText.includes("【答え】")) return bodyText;
-  try {
-    const resp = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: '以下の解説の最終結論を日本語で一行にまとめ、「【答え】...」の形式で返してください。数式はLaTeX禁止で、√(), x^2, (a)/(b) を使う。できれば数値を簡約して。' },
-          { role: 'user', content: bodyText }
-        ],
-        temperature: 0
-      },
-      { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
-    );
-    const line = resp.data.choices[0].message.content.trim();
-    return bodyText + "\n\n" + improveMathReadability(line);
-  } catch {
-    return bodyText + "\n\n【答え】（本文の結論を一行で要約）";
-  }
-}
-
-// ---- LINE reply ----
 async function replyToLine(replyToken, messages) {
   try {
     await axios.post(
@@ -118,76 +74,195 @@ async function replyToLine(replyToken, messages) {
   }
 }
 
-// ---- OpenAI ----
+// Sanitize for LaTeX-free text (for readability in LINE)
+function sanitizeTextMath(s) {
+  if (!s) return s;
+  let t = s;
+  t = t.replace(/\$\$?/g, "");
+  t = t.replace(/\\sqrt\{([^{}]+)\}/g, "√($1)");
+  t = t.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, "($1)/($2)");
+  t = t.replace(/\^\{([^{}]+)\}/g, "^$1");
+  t = t.replace(/\\cdot/g, "×").replace(/\\times/g, "×");
+  t = t.replace(/\\int/g, "∫");
+  // Space around operators
+  t = t.replace(/([0-9A-Za-z\)\]])([=\+\-×÷\/])([0-9A-Za-z\(\[])/g, "$1 $2 $3");
+  // Ensure 【答え】 is visible
+  t = t.replace(/\n?【答え】/g, "\n\n【答え】");
+  return t.trim();
+}
+
+// OpenAI helpers
 async function openaiChat(messages, model='gpt-4o', temperature=0.3) {
   const resp = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     { model, messages, temperature },
     { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
   );
-  return resp.data.choices[0].message.content.trim();
+  return resp.data.choices[0].message.content;
 }
 
-async function handleText(userText) {
+// Parse <LATEX> ... </LATEX>
+function extractLatexBlock(s) {
+  if (!s) return null;
+  const m = s.match(/<LATEX>\s*([\s\S]*?)\s*<\/LATEX>/i);
+  if (m) return m[1].trim();
+  // fallback: $$...$$
+  const m2 = s.match(/\$\$([\s\S]*?)\$\$/);
+  if (m2) return m2[1].trim();
+  return null;
+}
+
+// Render LaTeX (MathJax SVG) onto chalkboard PNG
+async function renderLatexToChalkboardPng(latex, outPath) {
+  // Typeset to SVG
+  const node = html.convert(latex, { display: true });
+  let svgString = adaptor.outerHTML(node);
+  // Force white stroke/fill
+  svgString = svgString.replace(/fill="[^"]*"/g, 'fill="#FFFFFF"')
+                       .replace(/stroke="[^"]*"/g, 'stroke="#FFFFFF"');
+
+  // Get viewBox size
+  const vb = svgString.match(/viewBox="([0-9\.\s\-]+)"/);
+  let width = 1200, height = 400;
+  if (vb) {
+    const parts = vb[1].split(/\s+/).map(Number);
+    const vbw = parts[2], vbh = parts[3];
+    const scale = 2.0; // upscale for crispness
+    width = Math.max(800, Math.floor(vbw * scale + 200));
+    height = Math.max(300, Math.floor(vbh * scale + 200));
+    // Scale svg
+    svgString = svgString.replace(/<svg[^>]*>/, (tag) => {
+      return tag.replace(/width="[^"]*"/, '').replace(/height="[^"]*"/, '')
+                .replace(/>/, ` width="${Math.floor(vbw*scale)}" height="${Math.floor(vbh*scale)}">`);
+    });
+  }
+
+  // Create chalkboard background (dark green)
+  const bg = {
+    create: {
+      width, height, channels: 3, background: { r: 18, g: 48, b: 40 } // dark board
+    }
+  };
+
+  // Compose SVG centered
+  const svgBuffer = Buffer.from(svgString);
+  const img = await sharp(bg)
+    .composite([{ input: svgBuffer, top: Math.floor((height -  Math.min(height-80, height-200)) / 2), left: 100 }])
+    .png()
+    .toFile(outPath);
+
+  return outPath;
+}
+
+// Build messages: text + image (if any)
+function buildReplyMessages(text, imageUrl) {
+  const msgs = [{ type: 'text', text }];
+  if (imageUrl) {
+    msgs.push({
+      type: 'image',
+      originalContentUrl: imageUrl,
+      previewImageUrl: imageUrl
+    });
+  }
+  return msgs;
+}
+
+// Prompts
+const SYSTEM_PROMPT = [
+  "あなたは『くまお先生』です。絵文字はほどほど。",
+  "やさしく・面白く・わかりやすく、スマホで読みやすい文で解説。",
+  "必ず番号つきで「何をしているか」を明記（1. 2. 3. ...）。",
+  "テキストではLaTeX禁止（sqrt→√、a/b→(a)/(b)、積分は ∫[a→b] f(x) dx）。",
+  "最後に必ず一行で「【答え】...」。",
+  "そして、数式画像用に LaTeX を <LATEX> と </LATEX> で囲んで最後に添えてください（画像生成に使います）。"
+].join("\n");
+
+async function handleText(req, replyToken, userText) {
   try {
-    const raw = await openaiChat([
-      { role: 'system', content: STYLE_PROMPT },
+    const content = await openaiChat([
+      { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: userText }
     ]);
-    const s1 = sanitizeLatex(raw);
-    const s2 = improveMathReadability(s1);
-    return await ensureAnswerLine(s2);
+
+    const latex = extractLatexBlock(content);
+    const text = sanitizeTextMath(content.replace(/<LATEX>[\s\S]*?<\/LATEX>/i, "").trim());
+
+    let imageUrl = null;
+    if (latex) {
+      const baseUrl = buildPublicBaseUrl(req);
+      const id = uuidv4();
+      const outPath = path.join(__dirname, 'public', 'boards', `${id}.png`);
+      try {
+        await renderLatexToChalkboardPng(latex, outPath);
+        imageUrl = `${baseUrl}/public/boards/${id}.png`;
+      } catch (e) {
+        console.error("Render error:", e.message);
+      }
+    }
+
+    const messages = buildReplyMessages(text, imageUrl);
+    await replyToLine(replyToken, messages);
   } catch (e) {
-    console.error("Text error:", e.response?.data || e.message);
-    return "今日はちょっと調子が悪いみたい。また少し時間をおいて試してみてね！";
+    console.error("Text flow error:", e.response?.data || e.message);
+    await replyToLine(replyToken, [{ type: 'text', text: "今日はちょっと調子が悪いみたい。また少し時間をおいて試してみてね！" }]);
   }
 }
 
-async function handleImage(imageBuffer) {
+async function handleImage(req, replyToken, messageId) {
   try {
-    const base64 = imageBuffer.toString('base64');
-    const raw = await openaiChat([
-      { role: 'system', content: STYLE_PROMPT },
+    const imgResp = await axios.get(
+      `https://api-data.line.me/v2/bot/message/${messageId}/content`,
+      { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` }, responseType: 'arraybuffer' }
+    );
+    const base64 = Buffer.from(imgResp.data).toString('base64');
+
+    const content = await openaiChat([
+      { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',
         content: [
-          { type: 'text', text: 'この画像の問題を解いて、何をしているかを日本語で明記しながら番号つきで解説してください。最後に【答え】を一行で明記。数式はLaTeX禁止（√(), (a)/(b), ∫[a→b] f(x) dx）。' },
+          { type: 'text', text: 'この画像を解説して、必要なら数式を使って解き、最後に【答え】を明記。' },
           { type: 'image_url', image_url: { url: `data:image/png;base64,${base64}` } }
         ]
       }
     ]);
-    const s1 = sanitizeLatex(raw);
-    const s2 = improveMathReadability(s1);
-    return await ensureAnswerLine(s2);
+
+    const latex = extractLatexBlock(content);
+    const text = sanitizeTextMath(content.replace(/<LATEX>[\s\S]*?<\/LATEX>/i, "").trim());
+
+    let imageUrl = null;
+    if (latex) {
+      const baseUrl = buildPublicBaseUrl(req);
+      const id = uuidv4();
+      const outPath = path.join(__dirname, 'public', 'boards', `${id}.png`);
+      try {
+        await renderLatexToChalkboardPng(latex, outPath);
+        imageUrl = `${baseUrl}/public/boards/${id}.png`;
+      } catch (e) {
+        console.error("Render error:", e.message);
+      }
+    }
+
+    const messages = buildReplyMessages(text, imageUrl);
+    await replyToLine(replyToken, messages);
   } catch (e) {
-    console.error("Image error:", e.response?.data || e.message);
-    return "画像をうまく読めなかったよ。もう一度送ってみてね！";
+    console.error("Image flow error:", e.response?.data || e.message);
+    await replyToLine(replyToken, [{ type: 'text', text: "画像をうまく読めなかったよ。もう一度送ってみてね！" }]);
   }
 }
 
-// ---- Webhook ----
+// Webhook
 app.post('/webhook', async (req, res) => {
   const events = req.body.events || [];
-  for (const event of events) {
-    if (event.type === 'message') {
-      const m = event.message;
+  for (const ev of events) {
+    if (ev.type === 'message') {
+      const m = ev.message;
       if (m.type === 'text') {
-        const replyText = await handleText(m.text);
-        await replyToLine(event.replyToken, [{ type: 'text', text: replyText }]);
+        await handleText(req, ev.replyToken, m.text);
       } else if (m.type === 'image') {
-        try {
-          const content = await axios.get(
-            `https://api-data.line.me/v2/bot/message/${m.id}/content`,
-            { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` }, responseType: 'arraybuffer' }
-          );
-          const replyText = await handleImage(Buffer.from(content.data));
-          await replyToLine(event.replyToken, [{ type: 'text', text: replyText }]);
-        } catch (e) {
-          console.error("Fetch image error:", e.response?.data || e.message);
-          await replyToLine(event.replyToken, [{ type: 'text', text: "画像の取得に失敗しました。もう一度送ってみてね！" }]);
-        }
+        await handleImage(req, ev.replyToken, m.id);
       } else {
-        await replyToLine(event.replyToken, [{ type: 'text', text: "今はテキストと画像メッセージに対応してるよ。" }]);
+        await replyToLine(ev.replyToken, [{ type: 'text', text: "今はテキストと画像に対応してるよ。" }]);
       }
     }
   }
@@ -196,4 +271,6 @@ app.post('/webhook', async (req, res) => {
 
 app.get('/healthz', (req, res) => res.status(200).json({ ok: true, uptime: process.uptime() }));
 
-app.listen(PORT, () => console.log(`🐻 Kumao-sensei bot (hotfix v4) listening on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🐻 Kumao-sensei bot (hybrid v5) listening on port ${PORT}`);
+});
