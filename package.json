@@ -1,7 +1,7 @@
 {
-  "name": "kumaosensei-v6.1-highlight",
+  "name": "kumaosenpai-final",
   "version": "1.0.0",
-  "description": "くまお先生 v6.1 会話ハイライト版 (🔶🔷🟧入り) - CommonJS",
+  "description": "くまお先生 最終版：数学強化（二重計算＋検算＋モデル切替）/ 答えは画像時のみ",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
@@ -10,6 +10,6 @@
   "dependencies": {
     "@line/bot-sdk": "^7.5.0",
     "axios": "^1.6.7",
-    "express": "^4.18.2"
+    "express": "^4.19.2"
   }
 }
