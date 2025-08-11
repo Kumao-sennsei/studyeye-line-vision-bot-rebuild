@@ -1,12 +1,10 @@
 {
-  "name": "kumaosenpai-final",
+  "name": "studyeye-risuu-final",
   "version": "1.0.0",
-  "description": "くまお先生 最終版：数学強化（二重計算＋検算＋モデル切替）/ 答えは画像時のみ",
+  "description": "StudyEye 理数系専門モード（くまお先生）- 数学強化: 二重計算＋検算＋サニタイズ。画像時のみ【答え】",
   "main": "index.js",
   "type": "commonjs",
-  "scripts": {
-    "start": "node index.js"
-  },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
     "@line/bot-sdk": "^7.5.0",
     "axios": "^1.6.7",
