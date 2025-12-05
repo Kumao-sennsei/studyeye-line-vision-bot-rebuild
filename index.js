@@ -41,6 +41,41 @@ async function handleEvent(event){
 /** ====== Flow: Text（答えは付けない） ====== */
 async function handleText(ev){
   const userText = ev.message.text || "";
+   // 🆕 ステップごと確認テストのトリガー
+  if (userText.startsWith("確認テスト:")) {
+    const question = userText.replace("確認テスト:", "").trim();
+
+    // 正解・誤答・た（もっと詳しく）を定義（仮の例！）
+    const correct = "内角の和は (n−2)×180° で求める";
+    const wrong1  = "180÷n が内角の和";
+    const wrong2  = "n×180 + 2 が内角の和";
+    const extra   = "もっと詳しく教えて！";
+
+    // 選択肢のランダムシャッフル処理
+    const choices = shuffle([
+      { label: "あ", text: correct, isCorrect: true },
+      { label: "か", text: wrong1 },
+      { label: "さ", text: wrong2 },
+    ]);
+    choices.push({ label: "た", text: extra, isExtra: true });
+
+    const replyText = [
+      `📝 ${question}`,
+      "",
+      ...choices.map(c => `${c.label}：${c.text}`),
+      "",
+      "↓ あ・か・さ・た で選んでね♪"
+    ].join("\n");
+function shuffle(array) {
+  return array.sort(() => Math.random() - 0.5);
+}
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: replyText
+    });
+  }
+
   const mathy = isMathy(userText);
   const system = buildSystemPrompt({ answerMode:'text' });
 
