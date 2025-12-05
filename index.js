@@ -1,6 +1,8 @@
 const line = require('@line/bot-sdk');
 const express = require('express');
 const axios = require('axios');
+// 🧠 ユーザーごとの状態保持（確認テストの出題・選択肢保存）
+const globalState = {};
 
 /** ====== ENV ====== */
 const config = {
