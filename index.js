@@ -113,6 +113,12 @@ if (["あ", "か", "さ", "た"].includes(userText.trim())) {
       "",
       "↓ あ・か・さ・た で選んでね♪"
     ].join("\n");
+// 🧠 出題内容を保存（ユーザーIDごとに）
+const userId = ev.source.userId;
+globalState[userId] = {
+  lastChoices: choices,
+  explanation: correct  // 今回は正解選択肢の内容をそのまま解説に使う
+};
 
     return client.replyMessage(ev.replyToken, {
       type: "text",
