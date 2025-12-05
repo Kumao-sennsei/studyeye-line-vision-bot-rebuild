@@ -127,11 +127,25 @@ globalState[userId] = {
   explanation: correct  // 今回は正解選択肢の内容をそのまま解説に使う
 };
 
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: replyText
-    });
-  }
+   if (choice.isCorrect) {
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: `✨そのとおりっ！！\nすごいなぁ〜！よくできましたっ🌟\n\n🐾 次のステップにすすんでみよう♪\n「確認テスト: ○○」って送ってね🐻`
+  });
+}
+} else if (choice.isExtra) {
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: `なるほどっ、もっと詳しく知りたいんだね🐻！\nよーし、くまお先生がバッチリ解説しちゃうよ〜📘✨\n\n${userState.explanation || "（解説内容がまだセットされてないよ）"}\n\n🐾 納得できたら「確認テスト: ○○」って送ってみてね♪`
+  });
+}
+} else {
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: `うんうん、ここで間違えても大丈夫！\nいっしょに理解を深めていこうね😊\n\n${userState.explanation || "（解説内容がまだセットされてないよ）"}\n\n🐾 もう一度チャレンジしたり、「確認テスト: ○○」って送ってね🐻`
+  });
+}
+
 
   const mathy = isMathy(userText);
   const system = buildSystemPrompt({ answerMode:'text' });
