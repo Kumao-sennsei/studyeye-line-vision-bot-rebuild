@@ -41,6 +41,50 @@ async function handleEvent(event){
 /** ====== Flow: Text（答えは付けない） ====== */
 async function handleText(ev){
   const userText = ev.message.text || "";
+// 🆕 選択肢応答（あ・か・さ・た）に対応
+const choiceMap = {
+  "あ": 0,
+  "か": 1,
+  "さ": 2,
+  "た": 3
+};
+
+// ユーザーの選択肢で処理
+if (["あ", "か", "さ", "た"].includes(userText.trim())) {
+  const userId = ev.source.userId;
+  const userState = globalState[userId];
+
+  if (userState && userState.lastChoices) {
+    const selected = choiceMap[userText.trim()];
+    const choice = userState.lastChoices[selected];
+
+    if (!choice) {
+      return client.replyMessage(ev.replyToken, { type: "text", text: "うーん、今は選択肢がないかも…💦 もう一度送ってみてね！" });
+    }
+
+    if (choice.isCorrect) {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: `✨そのとおりっ！！\nすごいなぁ〜！よくできましたっ🌟\n\n次のステップにすすんでみよう🐻♪`
+      });
+    } else if (choice.isExtra) {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: `なるほどっ、もっと詳しく知りたいんだね🐻！\nよーし、くまお先生がバッチリ解説しちゃうよ〜📘✨\n\n${userState.explanation || "（解説内容がまだセットされてないよ）"}`
+      });
+    } else {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: `うんうん、ここで間違えても大丈夫！\nいっしょに理解を深めていこうね😊\n\n${userState.explanation || "（解説内容がまだセットされてないよ）"}`
+      });
+    }
+  } else {
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: "まだ確認テストを出していないみたいだよ🐻！\n「確認テスト: ～」って送ってね♪"
+    });
+  }
+}
 
   // 🆕 ステップごと確認テストのトリガー
   if (userText.startsWith("確認テスト:")) {
