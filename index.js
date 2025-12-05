@@ -88,31 +88,31 @@ if (["あ", "か", "さ", "た"].includes(userText.trim())) {
   }
 }
 
-  // 🆕 ステップごと確認テストのトリガー
-  if (userText.startsWith("確認テスト:")) {
-    const question = userText.replace("確認テスト:", "").trim();
+ if (userText.startsWith("確認テスト:")) {
+  const question = userText.replace("確認テスト:", "").trim();
 
-    // 正解・誤答・た（もっと詳しく）を定義（仮の例！）
-    const correct = "内角の和は (n−2)×180° で求める";
-    const wrong1  = "180÷n が内角の和";
-    const wrong2  = "n×180 + 2 が内角の和";
-    const extra   = "もっと詳しく教えて！";
+  // 正解・誤答・た（もっと詳しく）を定義（仮の例！）
+  const correct = "内角の和は (n−2)×180° で求める";
+  const wrong1  = "180÷n が内角の和";
+  const wrong2  = "n×180 + 2 が内角の和";
+  const extra   = "もっと詳しく教えて！";
 
-    // 選択肢のランダムシャッフル処理
-    const choices = shuffle([
-      { label: "あ", text: correct, isCorrect: true },
-      { label: "か", text: wrong1 },
-      { label: "さ", text: wrong2 },
-    ]);
-    choices.push({ label: "た", text: extra, isExtra: true });
+  // 🔄 ← ここを差し替えます！この「shuffle～choices.push」の部分ごと！
+  const choices = shuffle([
+    { label: "あ", text: correct, isCorrect: true },
+    { label: "か", text: wrong1 },
+    { label: "さ", text: wrong2 },
+  ]);
+  choices.push({ label: "た", text: extra, isExtra: true });
 
-    const replyText = [
-      `📝 ${question}`,
-      "",
-      ...choices.map(c => `${c.label}：${c.text}`),
-      "",
-      "↓ あ・か・さ・た で選んでね♪"
-    ].join("\n");
+  const replyText = [
+    `📝 ${question}`,
+    "",
+    ...choices.map(c => `${c.label}：${c.text}`),
+    "",
+    "↓ あ・か・さ・た で選んでね♪"
+  ].join("\n");
+
 // 🧠 出題内容を保存（ユーザーIDごとに）
 const userId = ev.source.userId;
 globalState[userId] = {
