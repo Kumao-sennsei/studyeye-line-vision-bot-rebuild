@@ -1,91 +1,96 @@
-const line = require('@line/bot-sdk');
 const express = require('express');
+const line = require('@line/bot-sdk');
 const axios = require('axios');
+require('dotenv').config();
+
+// 💾 ユーザー状態保存
 const globalState = {};
 
 const config = {
-  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN || process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret:      process.env.CHANNEL_SECRET       || process.env.LINE_CHANNEL_SECRET
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const MATH_CAS_URL   = process.env.MATH_CAS_URL || "";
-
-if (!config.channelAccessToken || !config.channelSecret || !OPENAI_API_KEY) {
-  console.error('❌ ENV不足: CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET / OPENAI_API_KEY');
-  process.exit(1);
-}
-
 const client = new line.Client(config);
 const app = express();
-app.get('/healthz', (_,res)=>res.status(200).json({ ok:true, cas: !!MATH_CAS_URL }));
+
+// ✅ ヘルスチェック用
+app.get('/healthz', (_, res) => res.status(200).json({ ok: true }));
+
+// 🌐 Webhookエンドポイント
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
-    await Promise.all((req.body.events || []).map(handleEvent));
-    res.status(200).end();
-  } catch (e) {
-    console.error(e);
+    await Promise.all(req.body.events.map(handleEvent));
+    res.status(200).json({ ok: true }); // ← 超重要！！！
+  } catch (err) {
+    console.error('Webhook error:', err);
     res.status(500).end();
   }
 });
 
-async function handleEvent(event){
+// 🎯 イベントルーター
+async function handleEvent(event) {
   if (event.type !== 'message') return;
-  const m = event.message;
-  if (m.type === 'text')  return handleText(event);
-  if (m.type === 'image') return handleImage(event);
-  return client.replyMessage(event.replyToken, { type:'text', text: '今はテキストと画像に対応してるよ(●´ω｀●)' });
-}
 
-async function handleText(ev){
-  const userText = ev.message.text || "";
-  const choiceMap = { "あ": 0, "か": 1, "さ": 2, "た": 3 };
-
-  if (/^\d+（\d+）/.test(userText)) {
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: "これは画像の中の問題番号っぽいね🐻✨\n計算はしないで、そのまま解説をすすめていくよ〜！"
+  if (event.message.type === 'text') {
+    return handleText(event);
+  } else if (event.message.type === 'image') {
+    return handleImage(event);
+  } else {
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: 'テキストと画像に対応してるよ〜📸✏️',
     });
   }
+}
 
-  if (["あ", "か", "さ", "た"].includes(userText.trim())) {
-    const userId = ev.source.userId;
-    const userState = globalState[userId];
+// 📄 テキスト処理
+async function handleText(ev) {
+  const text = ev.message.text.trim();
+  const userId = ev.source.userId;
 
-    if (userState && userState.lastChoices) {
-      const selected = choiceMap[userText.trim()];
-      const choice = userState.lastChoices[selected];
+  const choiceMap = { あ: 0, か: 1, さ: 2, た: 3 };
 
-      if (!choice) {
-        return client.replyMessage(ev.replyToken, { type: "text", text: "うーん、今は選択肢がないかも…💦 もう一度送ってみてね！" });
-      }
+  // 選択肢応答処理
+  if (["あ", "か", "さ", "た"].includes(text)) {
+    const state = globalState[userId];
+    if (!state || !state.lastChoices) {
+      return client.replyMessage(ev.replyToken, {
+        type: 'text',
+        text: "今は選択肢の問題が出てないかも？\n「確認テスト: ○○」って送ってみてね🐻",
+      });
+    }
 
-      if (choice.isCorrect) {
-        return client.replyMessage(ev.replyToken, {
-          type: "text",
-          text: `✨そのとおりっ！！\nすごいなぁ〜！よくできましたっ🌟\n\n次のステップにすすんでみよう🐻♪`
-        });
-      } else if (choice.isExtra) {
-        return client.replyMessage(ev.replyToken, {
-          type: "text",
-          text: `なるほどっ、もっと詳しく知りたいんだね🐻！\nよーし、くまお先生がバッチリ解説しちゃうよ〜📘✨\n\n${userState.explanation || "（解説内容がまだセットされてないよ）"}`
-        });
-      } else {
-        return client.replyMessage(ev.replyToken, {
-          type: "text",
-          text: `うんうん、ここで間違えても大丈夫！\nいっしょに理解を深めていこうね😊\n\n${userState.explanation || "（解説内容がまだセットされてないよ）"}`
-        });
-      }
+    const selected = choiceMap[text];
+    const choice = state.lastChoices[selected];
+
+    if (!choice) {
+      return client.replyMessage(ev.replyToken, {
+        type: 'text',
+        text: "その選択肢は今は無効だよ💦 もう一度送ってみてね！",
+      });
+    }
+
+    if (choice.isCorrect) {
+      return client.replyMessage(ev.replyToken, {
+        type: 'text',
+        text: `✨そのとおりっ！！ よくできました🌟\n\n次の「確認テスト: ○○」もやってみよう！`,
+      });
+    } else if (choice.isExtra) {
+      return client.replyMessage(ev.replyToken, {
+        type: 'text',
+        text: `もっと詳しく知りたいんだね〜🐻\n\n${state.explanation || "解説がないよ💦"}`,
+      });
     } else {
       return client.replyMessage(ev.replyToken, {
-        type: "text",
-        text: "まだ確認テストを出していないみたいだよ🐻！\n「確認テスト: ～」って送ってね♪"
+        type: 'text',
+        text: `うんうん、ここは間違えてもOKだよ🌱\n\n${state.explanation || "解説がないよ💦"}`,
       });
     }
   }
 
-  if (userText.startsWith("確認テスト:")) {
-    const question = userText.replace("確認テスト:", "").trim();
-
+  // ✅ 確認テスト
+  if (text.startsWith("確認テスト:")) {
+    const question = text.replace("確認テスト:", "").trim();
     const correct = "内角の和は (n−2)×180° で求める";
     const wrong1  = "180÷n が内角の和";
     const wrong2  = "n×180 + 2 が内角の和";
@@ -98,58 +103,119 @@ async function handleText(ev){
     ]);
     choices.push({ label: "た", text: extra, isExtra: true });
 
-    const replyText = [
+    globalState[userId] = {
+      lastChoices: choices,
+      explanation: correct,
+    };
+
+    const reply = [
       `📝 ${question}`,
-      "",
       ...choices.map(c => `${c.label}：${c.text}`),
-      "",
       "↓ あ・か・さ・た で選んでね♪"
     ].join("\n");
 
-    const userId = ev.source.userId;
-    globalState[userId] = {
-      lastChoices: choices,
-      explanation: correct
-    };
-
-    return client.replyMessage(ev.replyToken, { type: "text", text: replyText });
+    return client.replyMessage(ev.replyToken, { type: 'text', text: reply });
   }
 
-  const mathy = isMathy(userText);
-  const system = buildSystemPrompt({ answerMode:'text' });
+  // 🤖 GPTで普通の質問に答える
+  const system = buildSystemPrompt("text");
+  const response = await openaiChat([
+    { role: "system", content: system },
+    { role: "user", content: buildGeneralPrompt(text) }
+  ]);
 
-  if (mathy) {
-    const prompt = buildMathSolvePrompt(userText);
-    const first  = await openaiChat({ model:'gpt-4o', messages:[
-      { role:'system', content: system },
-      { role:'user',   content: prompt }
-    ]});
-    const verify = await openaiChat({ model:'gpt-4o', temperature:0.1, messages:[
-      { role:'system', content: system },
-      { role:'user',   content: "今の解を別の観点で短く検算し、一致しなければ修正して整合させて。" }
-    ]});
-    let merged = sanitize(`${first}\n\n🔶 検算メモ\n${verify}`);
-    merged = merged.replace(/\n?【答え】.*/gs, "").trim();
-
-    if (MATH_CAS_URL && /∫|integral|dx|dy/.test(userText)) {
-      try {
-        const cas = await casCompute({ task:'auto', input:userText });
-        if (cas && cas.result) {
-          merged += `\n\n🔷 CAS検算: ${cas.resultSummary || cas.result}`;
-        }
-      } catch(e) { console.error('CAS error:', e.message); }
-    }
-
-    const out = withKumaoHighlights(merged);
-    return client.replyMessage(ev.replyToken, { type:'text', text: out });
-  }
-
-  const general = await openaiChat({ model:'gpt-4o-mini', messages:[
-    { role:'system', content: system },
-    { role:'user',   content: buildGeneralPrompt(userText) }
-  ]});
-  const out = withKumaoHighlights(sanitize(general).replace(/\n?【答え】.*/gs,""));
-  return client.replyMessage(ev.replyToken, { type:'text', text: out });
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: withKumaoHighlights(sanitize(response)),
+  });
 }
 
-// 画像処理・ユーティリティ関数などはそのまま下に続く
+// 📸 画像処理
+async function handleImage(ev) {
+  const stream = await client.getMessageContent(ev.message.id);
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const b64 = Buffer.concat(chunks).toString("base64");
+
+  const system = buildSystemPrompt("image");
+  const prompt = [
+    "画像の数学問題を読み取り、手順を説明し、最後に【答え】を一行で書いてください。",
+    "数式は LINE 向けに (a)/(b), √(), x^n などで表現すること。"
+  ].join("\n");
+
+  const response = await openaiChat([
+    { role: "system", content: system },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
+      ]
+    }
+  ]);
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: withKumaoHighlights(sanitize(response)),
+  });
+}
+
+// 🔧 OpenAI通信
+async function openaiChat(messages) {
+  try {
+    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
+      model: "gpt-4o",
+      temperature: 0.2,
+      messages,
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      }
+    });
+    return res.data.choices?.[0]?.message?.content || "解答が取得できませんでした";
+  } catch (e) {
+    console.error("OpenAI error:", e.response?.data || e.message);
+    return "エラーが発生したよ💦";
+  }
+}
+
+// 📜 ユーティリティ
+function sanitize(s = "") {
+  return s
+    .replace(/¥/g, "\\")
+    .replace(/\$\$?/g, "")
+    .replace(/\\frac{([^}]+)}{([^}]+)}/g, "($1)/($2)")
+    .replace(/\\sqrt{([^}]+)}/g, "√($1)")
+    .replace(/\^\{([^}]+)\}/g, "^$1")
+    .replace(/\\cdot/g, "×")
+    .replace(/\\times/g, "×")
+    .replace(/\\div/g, "÷")
+    .replace(/\\pm/g, "±")
+    .replace(/\\[A-Za-z]+/g, "");
+}
+
+function withKumaoHighlights(s = "") {
+  if (!/【答え】/.test(s)) {
+    s += "\n\n（わからないことがあったらまた聞いてね🐻）";
+  }
+  return s;
+}
+
+function buildSystemPrompt(mode) {
+  return [
+    "あなたは『くまお先生』。優しく、正確に、記号はLINEで崩れない形式で。",
+    mode === "image" ? "最後は必ず一行で【答え】を書いてください。" : ""
+  ].join("\n");
+}
+
+function buildGeneralPrompt(text) {
+  return `次の内容をやさしく説明してください：\n\n${text}`;
+}
+
+function shuffle(arr) {
+  return arr.sort(() => Math.random() - 0.5);
+}
+
+// 🚀 起動
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🧪 StudyEye LINE Bot Running on port ${PORT}`));
