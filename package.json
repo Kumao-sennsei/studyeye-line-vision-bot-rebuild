@@ -1,16 +1,19 @@
 {
   "name": "studyeye-risuu-final",
   "version": "1.0.0",
-  "description": "StudyEye 理数系専門モード（くまお先生）- 数学強化: 二重計算＋検算＋サニタイズ。画像時のみ【答え】",
+  "description": "StudyEye 理数系専門モード（くまお先生）・数学強化：二重計算＋検算＋サニタイズ。画像時のみ「答え」",
   "main": "index.js",
   "type": "commonjs",
-  "scripts": { "start": "node index.js" },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "@line/bot-sdk": "^7.5.0",
     "axios": "^1.6.7",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "dotenv": "^16.3.1"
   }
-}
-"scripts": {
-  "start": "node index.js"
 }
