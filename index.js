@@ -41,7 +41,8 @@ async function handleEvent(event){
 /** ====== Flow: Text（答えは付けない） ====== */
 async function handleText(ev){
   const userText = ev.message.text || "";
-   // 🆕 ステップごと確認テストのトリガー
+
+  // 🆕 ステップごと確認テストのトリガー
   if (userText.startsWith("確認テスト:")) {
     const question = userText.replace("確認テスト:", "").trim();
 
@@ -66,9 +67,6 @@ async function handleText(ev){
       "",
       "↓ あ・か・さ・た で選んでね♪"
     ].join("\n");
-function shuffle(array) {
-  return array.sort(() => Math.random() - 0.5);
-}
 
     return client.replyMessage(ev.replyToken, {
       type: "text",
@@ -80,7 +78,6 @@ function shuffle(array) {
   const system = buildSystemPrompt({ answerMode:'text' });
 
   if (mathy) {
-    // 数学：二重計算＋検算（モデル）＋必要ならCAS裏取り
     const prompt = buildMathSolvePrompt(userText);
     const first  = await openaiChat({ model:'gpt-4o', messages:[
       { role:'system', content: system },
@@ -91,7 +88,7 @@ function shuffle(array) {
       { role:'user',   content: "今の解を別の観点で短く検算し、一致しなければ修正して整合させて。" }
     ]});
     let merged = sanitize(`${first}\n\n🔶 検算メモ\n${verify}`);
-    merged = merged.replace(/\n?【答え】.*/gs, "").trim(); // テキスト会話では答え行を消す
+    merged = merged.replace(/\n?【答え】.*/gs, "").trim();
 
     if (MATH_CAS_URL && /∫|integral|dx|dy/.test(userText)) {
       try {
@@ -106,7 +103,6 @@ function shuffle(array) {
     return client.replyMessage(ev.replyToken, { type:'text', text: out });
   }
 
-  // 一般会話
   const general = await openaiChat({ model:'gpt-4o-mini', messages:[
     { role:'system', content: system },
     { role:'user',   content: buildGeneralPrompt(userText) }
@@ -147,7 +143,6 @@ async function handleImage(ev){
     });
     let out = sanitize(content);
 
-    // 任意：CAS検算
     if (MATH_CAS_URL) {
       try {
         const cas = await casCompute({ task:'auto', input:'(image)' });
@@ -155,7 +150,6 @@ async function handleImage(ev){
       } catch(e) {}
     }
 
-    // 【答え】が無ければ強制付与
     if (!/【答え】/.test(out)) {
       const fix = await openaiChat({
         model:'gpt-4o',
@@ -201,7 +195,6 @@ function buildGeneralPrompt(userText){
     "", `【話題】\n${userText}`
   ].join("\n");
 }
-
 async function openaiChat({messages, model='gpt-4o-mini', temperature=0.2}){
   try{
     const r = await axios.post('https://api.openai.com/v1/chat/completions',
@@ -214,18 +207,14 @@ async function openaiChat({messages, model='gpt-4o-mini', temperature=0.2}){
     return '';
   }
 }
-
-// 任意：CAS（SymPy等）のAPI
 async function casCompute(payload){
   if (!MATH_CAS_URL) return null;
   const r = await axios.post(MATH_CAS_URL, payload, { timeout: 12000 });
   return r.data;
 }
-
-/** ====== LaTeX → 読みやすい表記 ====== */
 function sanitize(s=''){
   let t = s;
-  t = t.replace(/¥/g,'\\').replace(/\$\$?/g,'').replace(/\\\(|\\\)/g,'');  // $, \( \)
+  t = t.replace(/¥/g,'\\').replace(/\$\$?/g,'').replace(/\\\(|\\\)/g,'');
   t = t.replace(/\\[,\;\!\:]/g,' ');
   t = t.replace(/\\left\s*/g,'(').replace(/\\right\s*/g,')');
   t = t.replace(/\\(text|mathrm|operatorname)\s*\{([^{}]*)\}/g,'$2');
@@ -242,8 +231,6 @@ function sanitize(s=''){
   t = t.replace(/[ \t]+/g,' ').replace(/\s+\n/g,'\n').trim();
   return t;
 }
-
-/** ====== なんちゃって色強調（記号） ====== */
 function withKumaoHighlights(text=''){
   let t = text;
   t = t.replace(/^(\s*)(公式[:：])/gmi, `$1🔷$2`);
@@ -255,6 +242,9 @@ function withKumaoHighlights(text=''){
     }
   }
   return t.trim();
+}
+function shuffle(array) {
+  return array.sort(() => Math.random() - 0.5);
 }
 
 /** ====== 起動 ====== */
