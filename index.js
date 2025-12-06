@@ -330,31 +330,6 @@ function replyMenu(replyToken) {
   });
 }
 
-// 🟦 質問モードを開始する（生徒が「質問したい！」を押した時）
-function startQuestionMode(ev) {
-  const userId = ev.source.userId;
-
-  // 質問モード初期化（STEP解析の準備）
-  globalState[userId] = {
-    mode: "question",
-    step: 0,           // STEPは0から開始
-    question: "",      // 問題文 or 画像URL
-    answer: "",        // 数学などで答えを先に送ってもらう目的
-  };
-// 🟦 質問モード中のメッセージを処理する本体（まだ中身なし）
-// 🟦 質問モードのメイン処理
-async function handleQuestionInput(ev) {
-  const userId = ev.source.userId;
-  const state = globalState[userId];
-
-  if (!state) {
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: "ごめんね💦 まずは「質問したい！」から始めてね🐻📘"
-    });
-  }
-
-  switch (state.step) {
 
     // ---------------------------------------------------------
     // 🟦 STEP0：問題を受け取るフェーズ
