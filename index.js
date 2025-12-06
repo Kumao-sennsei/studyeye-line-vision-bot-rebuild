@@ -1,11 +1,15 @@
-const express = require('express');
-const line = require('@line/bot-sdk');
-const axios = require('axios');
-require('dotenv').config();
+// ================================================
+// Part1: 基礎セットアップ
+// ================================================
+const express = require("express");
+const line = require("@line/bot-sdk");
+const axios = require("axios");
+require("dotenv").config();
 
-// 💾 ユーザー状態保存
+// 💾 全ユーザーの状態（質問 / 講義 / 演習）
 const globalState = {};
 
+// LINE設定
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET,
@@ -13,217 +17,48 @@ const config = {
 const client = new line.Client(config);
 const app = express();
 
-// ✅ ヘルスチェック用
-app.get('/healthz', (_, res) => res.status(200).json({ ok: true }));
+// ヘルスチェック
+app.get("/healthz", (_, res) => res.status(200).json({ ok: true }));
 
-// 🌐 Webhookエンドポイント
-app.post('/webhook', line.middleware(config), async (req, res) => {
+// Webhook
+app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
-    res.status(200).json({ ok: true }); // ← 超重要！！！
+    res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('Webhook error:', err);
+    console.error("Webhook error:", err);
     res.status(500).end();
   }
 });
+// ================================================
+// Part2: OpenAI共通処理・sanitize・ユーティリティ
+// ================================================
 
-// 🎯 イベントルーター
-async function handleEvent(event) {
-  // 🟣 ボタン（postback）に対応
-  if (event.type === "postback") {
-    return handlePostback(event);
-  }
-
-  // 🟣 テキスト・画像
-  if (event.type === "message") {
-
-    if (event.message.type === "text") {
-      return handleText(event);
-    }
-
-    if (event.message.type === "image") {
-      return handleImage(event);
-    }
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "テキストと画像に対応してるよ〜📸✏️",
-    });
-  }
-}
-
-
-// 📄 テキスト処理
-async function handleText(ev) {
-  const text = ev.message.text.trim();
-  const userId = ev.source.userId;
-    // 🐻 くまお先生：最初のメニュー誘導
-  // ユーザーのデータがなければ初期化してメニューを返す
-  if (!globalState[userId] || !globalState[userId].mode) {
-    globalState[userId] = { mode: "menu" };
-    return replyMenu(ev.replyToken);
-  }
-
-  // 「メニュー」と送られたら強制的にリセットしてメニューへ
-  if (text === "メニュー") {
-    globalState[userId] = { mode: "menu" };
-    return replyMenu(ev.replyToken);
-  }
-
-  if (text === "メニュー") {
-  globalState[userId] = {}; // modeリセット
-  return replyMenu(ev.replyToken);
-}
-
-
-  const choiceMap = { あ: 0, か: 1, さ: 2, た: 3 };
-
-  // 選択肢応答処理
-  if (["あ", "か", "さ", "た"].includes(text)) {
-    const state = globalState[userId];
-    if (!state || !state.lastChoices) {
-      return client.replyMessage(ev.replyToken, {
-        type: 'text',
-        text: "今は選択肢の問題が出てないかも？\n「確認テスト: ○○」って送ってみてね🐻",
-      });
-    }
-
-    const selected = choiceMap[text];
-    const choice = state.lastChoices[selected];
-
-    if (!choice) {
-      return client.replyMessage(ev.replyToken, {
-        type: 'text',
-        text: "その選択肢は今は無効だよ💦 もう一度送ってみてね！",
-      });
-    }
-
-    if (choice.isCorrect) {
-      return client.replyMessage(ev.replyToken, {
-        type: 'text',
-        text: `✨そのとおりっ！！ よくできました🌟\n\n次の「確認テスト: ○○」もやってみよう！`,
-      });
-    } else if (choice.isExtra) {
-      return client.replyMessage(ev.replyToken, {
-        type: 'text',
-        text: `もっと詳しく知りたいんだね〜🐻\n\n${state.explanation || "解説がないよ💦"}`,
-      });
-    } else {
-      return client.replyMessage(ev.replyToken, {
-        type: 'text',
-        text: `うんうん、ここは間違えてもOKだよ🌱\n\n${state.explanation || "解説がないよ💦"}`,
-      });
-    }
-  }
-
-  // ✅ 確認テスト
-if (text.startsWith("確認テスト:")) {
-  const question = text.replace("確認テスト:", "").trim();
-  const correct = "内角の和は (n−2)×180° で求める";
-  const wrong1  = "180÷n が内角の和";
-  const wrong2  = "n×180 + 2 が内角の和";
-  const extra   = "もっと詳しく教えて！";
-
-  const choices = shuffle([
-    { label: "あ", text: correct, isCorrect: true },
-    { label: "か", text: wrong1 },
-    { label: "さ", text: wrong2 },
-  ]);
-  choices.push({ label: "た", text: extra, isExtra: true });
-
-  globalState[userId] = {
-    lastChoices: choices,
-    explanation: correct,
-  };
-
-  const bodyText = [
-    `📝 ${question}`,
-    ...choices.map(c => `${c.label}：${c.text}`),
-    "↓ ボタンをタップして選んでね♪"
-  ].join("\n");
-
-  return client.replyMessage(ev.replyToken, {
-    type: "text",
-    text: bodyText,
-    quickReply: {
-      items: choices.map(c => ({
-        type: "action",
-        action: {
-          type: "message",
-          // 生徒に見える文字（ラベル）
-          label: `${c.label}：${c.text}`,
-          // Bot に届くテキスト → 「あ」「か」「さ」「た」
-          text: c.label
-        }
-      }))
-    }
-  });
-}
-
-
-  // 🤖 GPTで普通の質問に答える
-  const system = buildSystemPrompt("text");
-  const response = await openaiChat([
-    { role: "system", content: system },
-    { role: "user", content: buildGeneralPrompt(text) }
-  ]);
-
-  return client.replyMessage(ev.replyToken, {
-    type: "text",
-    text: withKumaoHighlights(sanitize(response)),
-  });
-}
-
-// 📸 画像処理
-async function handleImage(ev) {
-  const stream = await client.getMessageContent(ev.message.id);
-  const chunks = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  const b64 = Buffer.concat(chunks).toString("base64");
-
-  const system = buildSystemPrompt("image");
-  const prompt = [
-    "画像の数学問題を読み取り、手順を説明し、最後に【答え】を一行で書いてください。",
-    "数式は LINE 向けに (a)/(b), √(), x^n などで表現すること。"
-  ].join("\n");
-
-  const response = await openaiChat([
-    { role: "system", content: system },
-    {
-      role: "user",
-      content: [
-        { type: "text", text: prompt },
-        { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
-      ]
-    }
-  ]);
-
-  return client.replyMessage(ev.replyToken, {
-    type: "text",
-    text: withKumaoHighlights(sanitize(response)),
-  });
-}
-
-// 🔧 OpenAI通信
+// OpenAI API（Chat Completions）
 async function openaiChat(messages) {
   try {
-    const res = await axios.post("https://api.openai.com/v1/chat/completions", {
-      model: "gpt-4o",
-      temperature: 0.2,
-      messages,
-    }, {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    const res = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-4o",
+        temperature: 0.2,
+        messages,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
       }
-    });
-    return res.data.choices?.[0]?.message?.content || "解答が取得できませんでした";
-  } catch (e) {
-    console.error("OpenAI error:", e.response?.data || e.message);
-    return "エラーが発生したよ💦";
+    );
+
+    return res.data.choices?.[0]?.message?.content || "回答取得エラー💦";
+  } catch (err) {
+    console.error("OpenAI error:", err.response?.data || err.message);
+    return "OpenAI通信でエラーが発生したよ💦";
   }
 }
 
-// 📜 ユーティリティ
+// 数式の整形（LINE で崩れないように変換）
 function sanitize(s = "") {
   return s
     .replace(/¥/g, "\\")
@@ -238,6 +73,7 @@ function sanitize(s = "") {
     .replace(/\\[A-Za-z]+/g, "");
 }
 
+// 「【答え】が無いときは優しい締めをつける」
 function withKumaoHighlights(s = "") {
   if (!/【答え】/.test(s)) {
     s += "\n\n（わからないことがあったらまた聞いてね🐻）";
@@ -245,375 +81,193 @@ function withKumaoHighlights(s = "") {
   return s;
 }
 
+// GPT の役割指示（質問 ／ 画像解析）
 function buildSystemPrompt(mode) {
   return [
-    "あなたは『くまお先生』。優しく、正確に、記号はLINEで崩れない形式で。",
-    mode === "image" ? "最後は必ず一行で【答え】を書いてください。" : ""
+    "あなたは『くまお先生』。優しく、正確に説明すること。",
+    mode === "image"
+      ? "画像処理のときは、最後に必ず一行で【答え】を書いてください。"
+      : "",
   ].join("\n");
 }
 
+// 通常の質問に使うプロンプト
 function buildGeneralPrompt(text) {
   return `次の内容をやさしく説明してください：\n\n${text}`;
 }
 
+// 配列シャッフル
 function shuffle(arr) {
   return arr.sort(() => Math.random() - 0.5);
 }
+// ================================================
+// Part3: メインのテキスト処理（質問／講義／演習へ振り分け）
+// ================================================
 
-async function handlePostback(ev) {
-  const data = ev.postback.data; // 例：choice=A
+async function handleText(ev) {
+  const text = ev.message.text.trim();
   const userId = ev.source.userId;
 
-  // 🟣 4択の回答処理（中身はこのあと作る）
-  if (data.startsWith("choice=")) {
-    const selected = data.replace("choice=", ""); // A/B/C/D
-    return processChoice(ev, selected);
+  let state = globalState[userId];
+
+  // 初回 or モードなし → メニュー
+  if (!state || !state.mode) {
+    globalState[userId] = { mode: "menu" };
+    return replyMenu(ev.replyToken);
   }
-}
 
-// 🚀 起動
-const PORT = process.env.PORT || 8880;
-// ヘルスチェック
-app.get("/healthz", (_, res) => res.status(200).json({ ok: true }));
+  // 「メニュー」と送られたら強制リセット
+  if (text === "メニュー") {
+    globalState[userId] = { mode: "menu" };
+    return replyMenu(ev.replyToken);
+  }
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🧪 StudyEye LINE Bot Running on port ${PORT}`);
-});
-
-function replyMenu(replyToken) {
-  const menuText = `
-はじめまして〜🐻✨  
-くまお先生だよ。
-
-わからないところや、学びたいところがあったら  
-いっしょにゆっくり進めていこうね。
-
-画像は100％読み取れないこともあるから、  
-読めなかったら文章で送ってくれても大丈夫だよ🌱  
-数学・物理・化学は、答えを先に教えてくれると  
-考え方をもっとていねいに説明できるよ✨
-
-さて、今日はどうしたいかな？  
-  `.trim();
-
-  return client.replyMessage(replyToken, {
-    type: "text",
-    text: menuText,
-    quickReply: {
-      items: [
-        {
-          type: "action",
-          action: {
-            type: "message",
-            label: "質問したいよ〜🐻",
-            text: "質問したいよ〜🐻"
-          }
-        },
-        {
-          type: "action",
-          action: {
-            type: "message",
-            label: "授業をうけたいな✨",
-            text: "授業をうけたいな✨"
-          }
-        },
-        {
-          type: "action",
-          action: {
-            type: "message",
-            label: "演習したい！",
-            text: "演習したい！"
-          }
-        }
-      ]
+  // ================================
+  // メニューでのモード選択
+  // ================================
+  if (state.mode === "menu") {
+    if (text === "質問したいよ〜🐻") {
+      return startQuestionMode(ev);
     }
+    if (text === "授業をうけたいな✨") {
+      return startLectureMode(ev);
+    }
+    if (text === "演習したい！") {
+      return startExerciseMode(ev);
+    }
+
+    // 上記以外 → メニューへ戻す
+    return replyMenu(ev.replyToken);
+  }
+
+  // ================================
+  // 質問モード
+  // ================================
+  if (state.mode === "question") {
+    return handleQuestionMode(ev, state);
+  }
+
+  // ================================
+  // 講義モード
+  // ================================
+  if (state.mode === "lecture") {
+    return handleLectureMode(ev, state);
+  }
+
+  // ================================
+  // 演習モード
+  // ================================
+  if (state.mode === "exercise") {
+    return handleExerciseMode(ev, state);
+  }
+
+  // 万が一
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: "ごめんね💦 ちょっと混乱しちゃったみたい…「メニュー」で戻れるよ🐻"
   });
 }
+// ================================================
+// Part4: 質問モード（STEP0〜STEP6）
+// ================================================
 
+function startQuestionMode(ev) {
+  const userId = ev.source.userId;
 
-    // ---------------------------------------------------------
-    // 🟦 STEP0：問題を受け取るフェーズ
-    // ---------------------------------------------------------
-    case 0: {
-      let questionText = "";
-      let questionImage = "";
-
-      if (ev.message.type === "image") {
-        questionImage = ev.message.id;
-      } else if (ev.message.type === "text") {
-        questionText = ev.message.text.trim();
-      }
-
-      if (!questionText && !questionImage) {
-        return client.replyMessage(ev.replyToken, {
-          type: "text",
-          text: "問題文（または画像）が届いてないみたい🐻💦\nもう一度送ってくれる？📘"
-        });
-      }
-
-      state.question = {
-        text: questionText,
-        image: questionImage
-      };
-
-      state.step = 1;
-      return client.replyMessage(ev.replyToken, {
-        type: "text",
-        text:
-          "問題を受け取ったよ！🐻✨\n" +
-          "つぎに『答え（数字・式・キーワードなど）』も送ってね📘\n" +
-          "※数学・物理・化学は答えがあるとより正確に解説できるよ✍️"
-      });
-    }
-
-    // ---------------------------------------------------------
-    // 🟦 STEP1：答えを受け取るフェーズ
-    // ---------------------------------------------------------
-    case 1: {
-      let ansText = "";
-      if (ev.message.type === "text") {
-        ansText = ev.message.text.trim();
-      }
-
-      if (!ansText) {
-        return client.replyMessage(ev.replyToken, {
-          type: "text",
-          text: "答えがまだ届いていないみたい🐻💦\n数字や式で答えを送ってくれる？📘"
-        });
-      }
-
-      state.answer = ansText;
-      state.step = 2;
-
-      return client.replyMessage(ev.replyToken, {
-        type: "text",
-        text: "ありがとう！🐻✨\nじゃあまずはこの問題が『何を聞いているか？』を確認するね📘"
-      });
-    }
-
-// ---------------------------------------------------------
-// 🟦 STEP2：問題の意図（何を聞かれている？）＋4択生成
-// ---------------------------------------------------------
-case 2: {
-  // 正解位置を A/B/C からランダム決定
-  const positions = ["A", "B", "C"];
-  const correctPos = positions[Math.floor(Math.random() * 3)];
-
-  // GPT に4択を生成させるプロンプト
-  const prompt = `
-あなたは優しく丁寧に寄り添うスーパー全科目先生くまおです。
-
-目的：生徒が「この問題が何を聞いているのか」を理解できているかを確認したい。
-
-【生成するもの】
-1. 問題の意図を短くまとめた summary（←ここはくまおが優しく話すトーンOK）
-2. 理解チェック4択（A〜D）
-   - A/B/C：文章は淡々と統一
-   - ${correctPos} が正解
-   - 他の2つは：
-        ・1つは「ちょい惑わせ」（よくある誤解）
-        ・1つは「難しめのひっかけ」（高学年が間違えやすい）
-   - D は必ず「もっと詳しく教えて！」
-
-問題文：
-${state.question.text || "[画像]"}
-
-生徒の答え：
-${state.answer}
-
-【出力形式（必須）】
-{
- "summary": "〜〜〜（優しい口調）",
- "choices": {
-   "A": "〜〜〜（淡々）",
-   "B": "〜〜〜（淡々）",
-   "C": "〜〜〜（淡々）",
-   "D": "もっと詳しく教えて！"
- },
- "correct": "${correctPos}"
-}
-`;
-
-  const res = await openaiChat(prompt);
-
-  let ai;
-  try {
-    ai = JSON.parse(res);
-  } catch (e) {
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: "ごめんね💦 もう一度問題文を送ってくれる？🐻"
-    });
-  }
-
-  // 状態保存
-  state.summary = ai.summary;
-  state.lastChoices = ai.choices;
-  state.correct = ai.correct;
-
-  // 次のステップへ
-  state.step = 3;
-
-  // 4択をFlexメッセージで返す
-  return flexChoiceMessage(ev.replyToken, ai.summary, ai.choices);
-}
-
-
-   // ---------------------------------------------------------
-// 🟦 STEP3：解説フェーズ（本質理解チェック）
-// ---------------------------------------------------------
-case 3: {
-
-  // 4択の入力以外は無視
-  if (ev.message.type !== "text") {
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: "A / B / C / D の中から選んでね🐻📘"
-    });
-  }
-
-  const choice = ev.message.text.trim();
-
-  // -----------------------------
-  // 🎯 正解（通常くまお先生）
-  // -----------------------------
-  if (choice === state.correct) {
-
-    // 優しい通常くまお
-    const explanation = await openaiChat(`
-あなたは優しく寄り添うくまお先生です。
-次の問題について、生徒が「本質的に理解できるように」短く丁寧に解説してください。
-
-問題文：
-${state.question.text || "[画像]"}
-
-生徒の答え：
-${state.answer}
-
-解説のトーン：
-- 優しい
-- 寄り添う
-- 自信をつける
-- 無駄に長すぎない
-
-返答はテキストのみ。
-    `);
-
-    state.explanation = explanation;
-    state.step = 4;
-
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text:
-        explanation +
-        "\n\n🐻✨よくできたね！\n次は、この問題を解くための “基礎” を確認しようね📘"
-    });
-  }
-
-  // -----------------------------
-  // 🟦 D（もっと詳しく教えて！）→ スーパーくまお先生降臨
-  // -----------------------------
-  if (choice === "D") {
-
-    const superExplain = await openaiChat(`
-あなたは「スーパーくまお先生」です。
-生徒が理解に困っているので、最大限やさしく丁寧に、かみ砕いて説明してください。
-
-問題文：
-${state.question.text || "[画像]"}
-
-生徒の答え：
-${state.answer}
-
-トーンの指定：
-- 最上級のやさしさ
-- 例えを使って噛み砕く
-- 生徒を励ます
-- 安心させる
-- ノートに書いてね💛 などの指導もOK
-- くどくなりすぎず、的確に
-
-返答はテキストのみ。
-    `);
-
-    state.explanation = superExplain;
-    // D のあとも STEP4 に進む
-    state.step = 4;
-
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text:
-        superExplain +
-        "\n\n🐻💛 その調子だよ！\n次は基礎の部分を確認してみよう📘"
-    });
-  }
-
-  // -----------------------------
-  // ❌ 不正解 → スーパーくまお先生降臨
-  // -----------------------------
-  const wrongExplain = await openaiChat(`
-あなたは「スーパーくまお先生」です。
-生徒が選択肢を間違えてしまいました。
-落ち込ませず、やさしく丁寧に、噛み砕いて本質を説明してください。
-
-問題文：
-${state.question.text || "[画像]"}
-
-生徒の答え：
-${state.answer}
-
-要求：
-- 例えを交える
-- なぜ間違えやすいかも説明
-- 生徒を褒める
-- やる気を上げる
-- ノートに書いておこうね🐻💛 などOK
-
-返答はテキストのみ。
-  `);
-
-  state.explanation = wrongExplain;
-  state.step = 4;
+  globalState[userId] = {
+    mode: "question",
+    step: 0,
+    question: null,
+    answer: null,
+    summary: null,
+    lastChoices: null,
+    correct: null,
+    explanation: null,
+  };
 
   return client.replyMessage(ev.replyToken, {
     type: "text",
     text:
-      wrongExplain +
-      "\n\n🐻💛 大丈夫だよ、一緒に基礎も確認していこうね📘"
+      "よし！🐻📘 今日は個別指導モードで進めるよ！\n" +
+      "まずは **問題文の画像 or テキスト** を送ってね。"
   });
 }
 
+// 🎯 質問モードの本体
+async function handleQuestionMode(ev, state) {
 
-    // ---------------------------------------------------------
-// 🟦 STEP4：基礎確認フェーズ（4択で基礎理解をチェック）
-// ---------------------------------------------------------
-case 4: {
-  // 正解位置をランダムに A/B/C に割り当て
-  const positions = ["A", "B", "C"];
-  const correctPos = positions[Math.floor(Math.random() * 3)];
+  // -----------------------
+  // STEP0：問題文を受け取る
+  // -----------------------
+  if (state.step === 0) {
+    let qText = "";
+    let qImage = "";
 
-  // GPT に基礎問題を生成させる
-  const prompt = `
-あなたは優しく寄り添うスーパー全科目先生くまおです。
+    if (ev.message.type === "image") {
+      qImage = ev.message.id;
+    } else {
+      qText = ev.message.text.trim();
+    }
 
-【目的】
-この問題を解くために「最低限知っているべき基礎」をチェックする4択問題を作成します。
+    if (!qText && !qImage) {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "問題文か画像が届いてないみたいだよ🐻💦\nもう一度送ってね。"
+      });
+    }
 
-【4択の仕様】
-- A/B/C はすべて淡々とした文章で統一
-- 正解は "${correctPos}"
-- 誤答（残り2つ）は以下の2種類を1つずつ作る：
-    ・「ちょい惑わせ」あるある誤答
-    ・「ひっかけ」高学年が間違えやすい高度な誤解
-- D は固定で「もっと詳しく教えて！」
+    state.question = { text: qText, image: qImage };
+    state.step = 1;
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text:
+        "問題を受け取ったよ！🐻✨\n" +
+        "つぎに **この問題の答え** を送ってね。\n" +
+        "数学・物理・化学は答えを教えてもらえると、\nくまお先生がより正確に本質を説明できるよ！"
+    });
+  }
+
+  // -----------------------
+  // STEP1：答えを受け取る
+  // -----------------------
+  if (state.step === 1) {
+    if (ev.message.type !== "text") {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "答えはテキストで送ってね🐻💦"
+      });
+    }
+
+    state.answer = ev.message.text.trim();
+    state.step = 2;
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text:
+        "ありがとう！🐻✨\n" +
+        "じゃあまずはこの問題が **何をきいているのか？** を確認するね。"
+    });
+  }
+
+  // -----------------------
+  // STEP2：意図チェック（4択問題）
+  // -----------------------
+  if (state.step === 2) {
+    const positions = ["A", "B", "C"];
+    const correctPos = positions[Math.floor(Math.random() * 3)];
+
+    const prompt = `
+あなたは全科目スーパー家庭教師くまお先生です。
+問題の意図を理解する4択を作ります。
 
 【出力形式】
 {
- "question": "〜〜〜（基礎として何を問うか）",
+ "summary": "やさしい要約",
  "choices": {
-   "A": "〜〜〜（淡々）",
-   "B": "〜〜〜（淡々）",
-   "C": "〜〜〜（淡々）",
+   "A": "淡々とした文",
+   "B": "淡々とした文",
+   "C": "淡々とした文",
    "D": "もっと詳しく教えて！"
  },
  "correct": "${correctPos}"
@@ -624,184 +278,455 @@ ${state.question.text || "[画像]"}
 
 生徒の答え：
 ${state.answer}
-
-本質解説：
-${state.explanation}
 `;
 
-  const res = await openaiChat(prompt);
+    const res = await openaiChat(prompt);
 
-  let ai;
-  try {
-    ai = JSON.parse(res);
-  } catch (err) {
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: "ごめんね💦 もう一度送ってもらえる？🐻"
-    });
+    let ai;
+    try { ai = JSON.parse(res); }
+    catch {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "ちょっと乱れちゃった💦 もう一度送ってくれる？🐻"
+      });
+    }
+
+    state.summary = ai.summary;
+    state.lastChoices = ai.choices;
+    state.correct = ai.correct;
+    state.step = 3;
+
+    return flexChoiceMessage(ev.replyToken, ai.summary, ai.choices);
   }
 
-  // 状態保存
-  state.lastChoices = ai.choices;
-  state.correct = ai.correct;
-  state.basisQuestion = ai.question;
+  // -----------------------
+  // STEP3：本質解説チェック
+  // -----------------------
+  if (state.step === 3) {
+    if (ev.message.type !== "text") {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "A / B / C / D の中からえらんでね🐻📘"
+      });
+    }
 
-  // 次のステップへ
-  state.step = 5;
+    const choice = ev.message.text.trim();
 
-  return flexChoiceMessage(ev.replyToken, ai.question, ai.choices);
-}
+    // 正解 → 通常くまお
+    if (choice === state.correct) {
+      const explanation = await openaiChat(`
+あなたはやさしいくまお先生です。
+生徒が本質理解できるよう短く丁寧に説明。
 
+問題文：
+${state.question.text || "[画像]"}
 
-  // ---------------------------------------------------------
-// 🟦 STEP5：途中式の理解チェック（次に何をする？4択）
-// ---------------------------------------------------------
-case 5: {
-  // 正解を A/B/C からランダムに決定
-  const positions = ["A", "B", "C"];
-  const correctPos = positions[Math.floor(Math.random() * 3)];
+生徒の答え：
+${state.answer}
+`);
+      state.explanation = explanation;
+      state.step = 4;
 
-  const prompt = `
-あなたは優しく寄り添うスーパー全科目先生くまおです。
-今は「途中でどの操作をするか？（数学・物理・化学）」を理解できているかチェックするSTEPです。
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text:
+          explanation +
+          "\n\n🐻✨ いいね！ 次は“基礎”をチェックしてみよう！"
+      });
+    }
 
-【生成するもの】
-1. 途中式の確認のための質問文（例：次に何をすればいい？など）
-2. A/B/C の選択肢は淡々と統一
-   - 正解は "${correctPos}"
-   - 誤答2つは：
-       ・ちょい惑わせ（よくある次の操作の勘違い）
-       ・ひっかけ（上級者も迷う）
-3. D は固定で「もっと詳しく教えて！」
+    // D → スーパーくまお先生
+    if (choice === "D") {
+      const superExplain = await openaiChat(`
+あなたはスーパーくまお先生です。
+最上級にやさしく丁寧に説明します。
 
-【出力形式】
-{
- "question": "〜〜〜（途中式の確認）",
- "choices": {
-   "A": "〜〜〜",
-   "B": "〜〜〜",
-   "C": "〜〜〜",
-   "D": "もっと詳しく教えて！"
- },
- "correct": "${correctPos}"
-}
+問題文：
+${state.question.text || "[画像]"}
+
+生徒の答え：
+${state.answer}
+`);
+      state.explanation = superExplain;
+      state.step = 4;
+
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text:
+          superExplain +
+          "\n\n🐻💛 次は“基礎”をいっしょに確認しよう！"
+      });
+    }
+
+    // 不正解 → スーパーくまお先生
+    const wrongExplain = await openaiChat(`
+あなたはスーパーくまお先生です。
+間違えた生徒をやさしく励ましながら本質を説明。
 
 問題文：
 ${state.question.text || "[画像]"}
 生徒の答え：
 ${state.answer}
-解説（前ステップまで）：
-${state.explanation}
-`;
+`);
+    state.explanation = wrongExplain;
+    state.step = 4;
 
-  const res = await openaiChat(prompt);
-
-  let ai;
-  try {
-    ai = JSON.parse(res);
-  } catch (e) {
     return client.replyMessage(ev.replyToken, {
       type: "text",
-      text: "ごめんね💦 もう一度送ってくれる？🐻"
+      text:
+        wrongExplain +
+        "\n\n🐻💛 大丈夫、次は基礎を確認しようね！"
     });
   }
 
-  state.lastChoices = ai.choices;
-  state.correct = ai.correct;
-  state.step5Question = ai.question;
+  // -----------------------
+  // STEP4：基礎確認用4択
+  // -----------------------
+  if (state.step === 4) {
+    const positions = ["A", "B", "C"];
+    const correctPos = positions[Math.floor(Math.random() * 3)];
 
-  // 次のSTEPは6（まとめ＋類題）
-  state.step = 6;
+    const prompt = `
+基礎理解を確認する4択を作成。
 
-  return flexChoiceMessage(ev.replyToken, ai.question, ai.choices);
+【出力】
+{
+ "question": "基礎の質問文",
+ "choices": {...},
+ "correct": "${correctPos}"
 }
 
+問題文：
+${state.question.text}
 
-    // ---------------------------------------------------------
-// 🟦 STEP6：まとめ＋類題（4択なし）
-// ---------------------------------------------------------
-case 6: {
+生徒の答え：
+${state.answer}
 
-  const prompt = `
-あなたは優しく寄り添うスーパー全科目先生くまおです。
+前の解説：
+${state.explanation}
+`;
 
-【目的】
-1. 今までの解説を簡潔にまとめて生徒に自信をつける。
-2. 仕上げとして類題を1問だけ作り、答えと解説をつける。
-3. 類題には4択をつけてはいけません。
+    const res = await openaiChat(prompt);
 
-【類題の仕様】
-- 元の問題と「似ているが少しだけ変化」がある問題を作る
-- 解説はやさしく、ステップごとに分かりやすく
-- 答えを最後に明確に書く
-- トーンは通常くまお（優しく丁寧）
-- 4択は絶対につけない（重要）
+    let ai;
+    try { ai = JSON.parse(res); }
+    catch {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "ごめんね💦 もう一度送ってくれる？"
+      });
+    }
 
-【出力形式】
+    state.lastChoices = ai.choices;
+    state.correct = ai.correct;
+    state.step = 5;
+
+    return flexChoiceMessage(ev.replyToken, ai.question, ai.choices);
+  }
+
+  // -----------------------
+  // STEP5：途中式チェック（次に何する？）
+  // -----------------------
+  if (state.step === 5) {
+    const positions = ["A", "B", "C"];
+    const correctPos = positions[Math.floor(Math.random() * 3)];
+
+    const prompt = `
+途中の操作理解チェックを生成。
+
+【出力】
 {
- "summary": "〜〜〜（まとめ）",
+ "question": "途中式の質問",
+ "choices": {...},
+ "correct": "${correctPos}"
+}
+    
+問題文：
+${state.question.text}
+`;
+
+    const res = await openaiChat(prompt);
+
+    let ai;
+    try { ai = JSON.parse(res); }
+    catch {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "ごめんね💦 もう一度送ってね。"
+      });
+    }
+
+    state.lastChoices = ai.choices;
+    state.correct = ai.correct;
+    state.step = 6;
+
+    return flexChoiceMessage(ev.replyToken, ai.question, ai.choices);
+  }
+
+  // -----------------------
+  // STEP6：まとめ＋類題（4択なし）
+  // -----------------------
+  if (state.step === 6) {
+    const prompt = `
+まとめと類題を生成。
+
+【出力】
+{
+ "summary": "...",
  "related": {
-     "question": "〜〜〜（類題）",
-     "explanation": "〜〜〜（わかりやすい解説）",
-     "answer": "〜〜〜"
+   "question": "...",
+   "explanation": "...",
+   "answer": "..."
  }
 }
 
 問題文：
-${state.question.text || "[画像]"}
+${state.question.text}
 
 生徒の答え：
 ${state.answer}
 
-前ステップまでの解説：
+解説：
 ${state.explanation}
 `;
 
-  const res = await openaiChat(prompt);
+    const res = await openaiChat(prompt);
 
-  let ai;
-  try {
-    ai = JSON.parse(res);
-  } catch (e) {
+    let ai;
+    try { ai = JSON.parse(res); }
+    catch {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "類題生成に失敗しちゃった💦 もう一度お願い🐻"
+      });
+    }
+
+    // リセット
+    state.step = 0;
+    state.lastChoices = null;
+    state.correct = null;
+
+    const msg =
+      `📘 **まとめ**\n${ai.summary}\n\n` +
+      `📘 **類題**\n${ai.related.question}\n\n` +
+      `📘 **解説**\n${ai.related.explanation}\n\n` +
+      `【答え】${ai.related.answer}\n\n` +
+      "🐻✨ よくできたね！\n別の問題も送ってみる？";
+
+    return client.replyMessage(ev.replyToken, { type: "text", text: msg });
+  }
+}
+// ================================================
+// Part5: 講義モード（科目＋単元 → くまお授業）
+// ================================================
+
+async function startLectureMode(ev) {
+  const userId = ev.source.userId;
+
+  // モード初期化
+  globalState[userId] = {
+    mode: "lecture",
+    step: 0,
+    subject: "",
+    unit: ""
+  };
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text:
+      "よ〜し、授業モードに入るよ🐻📘✨\n" +
+      "まずは **科目** を教えてね！\n例：数学 / 物理 / 化学 / 英語 / 国語 / 社会"
+  });
+}
+
+
+// 🎯 講義モード本体
+async function handleLectureMode(ev, state) {
+  const msg = ev.message.text.trim();
+
+  // ------------------------------
+  // STEP0：科目を受け取る
+  // ------------------------------
+  if (state.step === 0) {
+    state.subject = msg;
+    state.step = 1;
+
     return client.replyMessage(ev.replyToken, {
       type: "text",
-      text: "ごめんね💦 類題をうまく作れなかったみたい…もう一度試してもらえる？🐻"
+      text:
+        `OK！🐻✨ 科目は **${msg}** だね！\n` +
+        "次は **単元（テーマ）** を教えてね。\n例：因数分解 / 電磁気 / 酸塩基 / 文法 / 古文読解 etc..."
     });
   }
 
-  // 会話をリセット（新しい問題に備える）
-  state.step = 0;
-  state.lastChoices = null;
-  state.correct = null;
+  // ------------------------------
+  // STEP1：単元を受け取る → 講義スタート
+  // ------------------------------
+  if (state.step === 1) {
+    state.unit = msg;
+    state.step = 2;
 
-  // まとめ＋類題を返す
-  const msg =
-    `📘 **まとめ**\n${ai.summary}\n\n` +
-    `📘 **類題**\n${ai.related.question}\n\n` +
-    `📘 **解説**\n${ai.related.explanation}\n\n` +
-    `【答え】${ai.related.answer}\n\n` +
-    "🐻✨よく頑張ったね！もう少し挑戦してみる？それとも別の問題を送る？";
+    // GPT に講義（ノート風）を作成させる
+    const lecture = await openaiChat(`
+あなたは優しく丁寧に教える「くまお先生」です。
 
-  return client.replyMessage(ev.replyToken, {
-    type: "text",
-    text: msg
-  });
-}
+【目的】
+生徒がノートを取りやすいように、要点がまとまった「講義」を作る。
 
-    // ---------------------------------------------------------
-    default:
-      state.step = 0;
+【講義の条件】
+- 最重要ポイントを順番に説明
+- 適度に区切って読みやすく
+- 数式・例題を入れてもOK
+- トーンは通常くまお（優しく寄り添う）
+- 長すぎず、しかし内容はしっかり
+
+【出力形式】
+「講義内容のみ」
+
+科目：${state.subject}
+単元：${state.unit}
+    `);
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text:
+        "📘 **くまお先生の講義ノート**\n" +
+        lecture +
+        "\n\n次はどうする？\n・「もう1回ききたい」\n・「別の単元」\n・「演習したい！」\n・「メニュー」"
+    });
+  }
+
+  // ------------------------------
+  // STEP2：講義後の反応
+  // ------------------------------
+  if (state.step === 2) {
+
+    if (msg === "もう1回ききたい") {
+      return handleLectureMode(ev, { ...state, step: 1 });
+    }
+
+    if (msg === "別の単元") {
+      state.step = 1;
       return client.replyMessage(ev.replyToken, {
         type: "text",
-        text: "ごめんね💦ちょっと混乱しちゃったみたい🐻\nもう一度最初から問題を送ってくれる？📘"
+        text: "OK！🐻✨ 新しい単元を教えてね！"
       });
+    }
+
+    if (msg === "演習したい！") {
+      return startExerciseMode(ev); // 演習モードへバトンタッチ
+    }
+
+    if (msg === "メニュー") {
+      globalState[ev.source.userId] = { mode: "menu" };
+      return replyMenu(ev.replyToken);
+    }
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text:
+        "次はどうする？\n\n・「もう1回ききたい」\n・「別の単元」\n・「演習したい！」\n・「メニュー」"
+    });
+  }
+}
+// ================================================
+// Part6：統合ルーター（全モード切替の中枢部）
+// ================================================
+
+async function handleEvent(event) {
+  const userId = event.source.userId;
+
+  // ---- Postback（未使用だが将来用） ----
+  if (event.type === "postback") {
+    return handlePostback(event);
+  }
+
+  // ---- メッセージ受信 ----
+  if (event.type === "message") {
+    const msgType = event.message.type;
+
+    // 画像 → 質問モードへ渡す
+    if (msgType === "image") {
+      return handleImage(event);
+    }
+
+    // テキスト
+    if (msgType === "text") {
+      return handleText(event);
+    }
   }
 }
 
 
+// ================================================
+// handleText：全モードの入口
+// ================================================
 
-  return client.replyMessage(ev.replyToken, {
-    type: "text",
-    text: "了解だよ〜🐻✨\nまずは「問題文（または画像）」を送ってね！\n数学・物理・化学は答えも一緒に送ってくれると助かるよ✏️"
-  });
+async function handleText(ev) {
+  const text = ev.message.text.trim();
+  const userId = ev.source.userId;
+
+  // ▼ メニューコマンドはいつでも強制遷移
+  if (text === "メニュー") {
+    globalState[userId] = { mode: "menu" };
+    return replyMenu(ev.replyToken);
+  }
+
+  // ▼ ユーザー状態取得（なければメニュー）
+  if (!globalState[userId] || !globalState[userId].mode) {
+    globalState[userId] = { mode: "menu" };
+    return replyMenu(ev.replyToken);
+  }
+
+  const state = globalState[userId];
+
+  // ===========================================
+  // ① モード選択メニュー
+  // ===========================================
+  if (state.mode === "menu") {
+
+    if (text === "質問したいよ〜🐻") {
+      return startQuestionMode(ev);
+    }
+
+    if (text === "授業をうけたいな✨") {
+      return startLectureMode(ev);
+    }
+
+    if (text === "演習したい！") {
+      return startExerciseMode(ev);
+    }
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: "やりたいことを選んでね🐻✨\n\n・質問したいよ〜🐻\n・授業をうけたいな✨\n・演習したい！"
+    });
+  }
+
+  // ===========================================
+  // ② 質問モード（STEP0〜STEP6）
+  // ===========================================
+  if (state.mode === "question") {
+    return handleQuestionMode(ev, state);
+  }
+
+  // ===========================================
+  // ③ 講義モード（科目 → 単元 → 講義）
+  // ===========================================
+  if (state.mode === "lecture") {
+    return handleLectureMode(ev, state);
+  }
+
+  // ===========================================
+  // ④ 演習モード（1問 → 解答 → 判定）
+  // ===========================================
+  if (state.mode === "exercise") {
+    return handleExerciseMode(ev, state);
+  }
+
+  // ===========================================
+  // ⑤ 想定外 → 強制メニュー
+  // ===========================================
+  globalState[userId] = { mode: "menu" };
+  return replyMenu(ev.replyToken);
 }
