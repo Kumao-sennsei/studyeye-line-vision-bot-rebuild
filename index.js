@@ -730,3 +730,61 @@ async function handleText(ev) {
   globalState[userId] = { mode: "menu" };
   return replyMenu(ev.replyToken);
 }
+// ================================================
+// Part7: メインイベントルーター（質問 / 講義 / 演習 / 通常質問）
+// ================================================
+
+async function handleEvent(event) {
+  const userId = event.source.userId;
+  const state = globalState[userId] || {};
+
+  // --- 画像は質問モード or 通常質問へ ---
+  if (event.type === "message" && event.message.type === "image") {
+    if (state.mode === "question") {
+      return handleQuestionMode(event, state);
+    }
+    return handleImage(event);
+  }
+
+  // --- テキストメッセージ ---
+  if (event.type === "message" && event.message.type === "text") {
+    const text = event.message.text.trim();
+
+    // 📌 メニューへ強制戻し
+    if (text === "メニュー") {
+      globalState[userId] = {};
+      return replyMenu(event.replyToken);
+    }
+
+    // ------- 各モードの入り口 -------
+    if (text === "質問したいよ〜🐻") {
+      return startQuestionMode(event);
+    }
+    if (text === "授業をうけたいな✨") {
+      return startLectureMode(event);
+    }
+    if (text === "演習したい！") {
+      return startExerciseMode(event);
+    }
+
+    // ------- 各モードの継続処理 -------
+    if (state.mode === "question") {
+      return handleQuestionMode(event, state);
+    }
+    if (state.mode === "lecture") {
+      return handleLectureMode(event, state);
+    }
+    if (state.mode === "exercise") {
+      return handleExerciseMode(event, state);
+    }
+
+    // ------- 上記に該当しない → 通常質問 (GPT回答) -------
+    return handleGeneralQuestion(event);
+  }
+
+  // どれでもない場合
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text: "メッセージを受け取ったよ🐻✨"
+  });
+}
