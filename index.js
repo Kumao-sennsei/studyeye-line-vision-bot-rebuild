@@ -341,6 +341,60 @@ function startQuestionMode(ev) {
     question: "",      // 問題文 or 画像URL
     answer: "",        // 数学などで答えを先に送ってもらう目的
   };
+// 🟦 質問モード中のメッセージを処理する本体（まだ中身なし）
+async function handleQuestionInput(ev) {
+  const userId = ev.source.userId;
+  const text = ev.message.type === "text" ? ev.message.text.trim() : null;
+  const messageType = ev.message.type;
+
+  // ユーザーの現在の状態を取得
+  const state = globalState[userId];
+
+  if (!state || state.mode !== "question") {
+    // 質問モードじゃなければ何もしない
+    return;
+  }
+
+  switch (state.step) {
+
+    case 0:
+      // 🟦 STEP0：問題を待つフェーズ
+      // （ここに後からSTEP0の中身を入れる）
+      break;
+
+    case 1:
+      // 🟦 STEP1：答えを待つフェーズ
+      break;
+
+    case 2:
+      // 🟦 STEP2：緊急モード（答えなしで進める？）
+      break;
+
+    case 3:
+      // 🟦 STEP3：解説STEP1（問題の趣旨）
+      break;
+
+    case 4:
+      // 🟦 STEP4：基礎問題の確認
+      break;
+
+    case 5:
+      // 🟦 STEP5：途中式のつまずき確認
+      break;
+
+    case 6:
+      // 🟦 STEP6：まとめ＋類題
+      break;
+
+    default:
+      // 想定外 → 初期化して保護
+      state.step = 0;
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "ごめんね🐻💦 ちょっと混乱しちゃった！もう一度問題を送ってくれる？"
+      });
+  }
+}
 
   return client.replyMessage(ev.replyToken, {
     type: "text",
