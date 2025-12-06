@@ -218,6 +218,9 @@ function shuffle(arr) {
 
 // 🚀 起動
 const PORT = process.env.PORT || 8880;
+// ヘルスチェック
+app.get("/healthz", (_, res) => res.status(200).json({ ok: true }));
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🧪 StudyEye LINE Bot Running on port ${PORT}`);
 });
