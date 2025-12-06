@@ -29,19 +29,29 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 
 // 🎯 イベントルーター
 async function handleEvent(event) {
-  if (event.type !== 'message') return;
+  // 🟣 ボタン（postback）に対応
+  if (event.type === "postback") {
+    return handlePostback(event);
+  }
 
-  if (event.message.type === 'text') {
-    return handleText(event);
-  } else if (event.message.type === 'image') {
-    return handleImage(event);
-  } else {
+  // 🟣 テキスト・画像
+  if (event.type === "message") {
+
+    if (event.message.type === "text") {
+      return handleText(event);
+    }
+
+    if (event.message.type === "image") {
+      return handleImage(event);
+    }
+
     return client.replyMessage(event.replyToken, {
-      type: 'text',
-      text: 'テキストと画像に対応してるよ〜📸✏️',
+      type: "text",
+      text: "テキストと画像に対応してるよ〜📸✏️",
     });
   }
 }
+
 
 // 📄 テキスト処理
 async function handleText(ev) {
