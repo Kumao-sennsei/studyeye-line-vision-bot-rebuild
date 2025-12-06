@@ -47,6 +47,19 @@ async function handleEvent(event) {
 async function handleText(ev) {
   const text = ev.message.text.trim();
   const userId = ev.source.userId;
+    // 🐻 くまお先生：最初のメニュー誘導
+  // ユーザーのデータがなければ初期化してメニューを返す
+  if (!globalState[userId] || !globalState[userId].mode) {
+    globalState[userId] = { mode: "menu" };
+    return replyMenu(ev.replyToken);
+  }
+
+  // 「メニュー」と送られたら強制的にリセットしてメニューへ
+  if (text === "メニュー") {
+    globalState[userId] = { mode: "menu" };
+    return replyMenu(ev.replyToken);
+  }
+
   if (text === "メニュー") {
   globalState[userId] = {}; // modeリセット
   return replyMenu(ev.replyToken);
