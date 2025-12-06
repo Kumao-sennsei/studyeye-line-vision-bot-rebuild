@@ -47,6 +47,11 @@ async function handleEvent(event) {
 async function handleText(ev) {
   const text = ev.message.text.trim();
   const userId = ev.source.userId;
+  if (text === "メニュー") {
+  globalState[userId] = {}; // modeリセット
+  return replyMenu(ev.replyToken);
+}
+
 
   const choiceMap = { あ: 0, か: 1, さ: 2, た: 3 };
 
@@ -89,33 +94,49 @@ async function handleText(ev) {
   }
 
   // ✅ 確認テスト
-  if (text.startsWith("確認テスト:")) {
-    const question = text.replace("確認テスト:", "").trim();
-    const correct = "内角の和は (n−2)×180° で求める";
-    const wrong1  = "180÷n が内角の和";
-    const wrong2  = "n×180 + 2 が内角の和";
-    const extra   = "もっと詳しく教えて！";
+if (text.startsWith("確認テスト:")) {
+  const question = text.replace("確認テスト:", "").trim();
+  const correct = "内角の和は (n−2)×180° で求める";
+  const wrong1  = "180÷n が内角の和";
+  const wrong2  = "n×180 + 2 が内角の和";
+  const extra   = "もっと詳しく教えて！";
 
-    const choices = shuffle([
-      { label: "あ", text: correct, isCorrect: true },
-      { label: "か", text: wrong1 },
-      { label: "さ", text: wrong2 },
-    ]);
-    choices.push({ label: "た", text: extra, isExtra: true });
+  const choices = shuffle([
+    { label: "あ", text: correct, isCorrect: true },
+    { label: "か", text: wrong1 },
+    { label: "さ", text: wrong2 },
+  ]);
+  choices.push({ label: "た", text: extra, isExtra: true });
 
-    globalState[userId] = {
-      lastChoices: choices,
-      explanation: correct,
-    };
+  globalState[userId] = {
+    lastChoices: choices,
+    explanation: correct,
+  };
 
-    const reply = [
-      `📝 ${question}`,
-      ...choices.map(c => `${c.label}：${c.text}`),
-      "↓ あ・か・さ・た で選んでね♪"
-    ].join("\n");
+  const bodyText = [
+    `📝 ${question}`,
+    ...choices.map(c => `${c.label}：${c.text}`),
+    "↓ ボタンをタップして選んでね♪"
+  ].join("\n");
 
-    return client.replyMessage(ev.replyToken, { type: 'text', text: reply });
-  }
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: bodyText,
+    quickReply: {
+      items: choices.map(c => ({
+        type: "action",
+        action: {
+          type: "message",
+          // 生徒に見える文字（ラベル）
+          label: `${c.label}：${c.text}`,
+          // Bot に届くテキスト → 「あ」「か」「さ」「た」
+          text: c.label
+        }
+      }))
+    }
+  });
+}
+
 
   // 🤖 GPTで普通の質問に答える
   const system = buildSystemPrompt("text");
