@@ -330,3 +330,20 @@ function replyMenu(replyToken) {
   });
 }
 
+// 🟦 質問モードを開始する（生徒が「質問したい！」を押した時）
+function startQuestionMode(ev) {
+  const userId = ev.source.userId;
+
+  // 質問モード初期化（STEP解析の準備）
+  globalState[userId] = {
+    mode: "question",
+    step: 0,           // STEPは0から開始
+    question: "",      // 問題文 or 画像URL
+    answer: "",        // 数学などで答えを先に送ってもらう目的
+  };
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: "了解だよ〜🐻✨\nまずは「問題文（または画像）」を送ってね！\n数学・物理・化学は答えも一緒に送ってくれると助かるよ✏️"
+  });
+}
