@@ -490,32 +490,38 @@ ${state.explanation}
 }
 
 // ================================================
-// Part5: 講義モード（科目＋単元 → くまお授業）
+// Part5: 講義モード（科目＋単元 → ノート講義 → 自由対話）
 // ================================================
 
 async function startLectureMode(ev) {
   const userId = ev.source.userId;
 
+  // モード初期化
   globalState[userId] = {
     mode: "lecture",
     step: 0,
     subject: "",
     unit: "",
+    lectureNote: ""
   };
 
   return client.replyMessage(ev.replyToken, {
     type: "text",
     text:
       "よ〜し、授業モードに入るよ🐻📘✨\n" +
-      "まずは **科目** を教えてね！\n例：数学 / 物理 / 化学 / 英語 / 国語 / 社会",
+      "まずは **科目** を教えてね！\n例：数学 / 物理 / 化学 / 英語 / 国語 / 社会"
   });
 }
 
-// 🎯 講義モード本体
-async function handleLectureMode(ev, state) {
-  const msg = ev.message.type === "text" ? ev.message.text.trim() : "";
 
-  // STEP0：科目
+// 🎯 講義モード本体（自由対話型）
+async function handleLectureMode(ev, state) {
+  const msg = ev.message.text.trim();
+  const userId = ev.source.userId;
+
+  // ------------------------------
+  // STEP0：科目を受け取る
+  // ------------------------------
   if (state.step === 0) {
     state.subject = msg;
     state.step = 1;
@@ -524,72 +530,104 @@ async function handleLectureMode(ev, state) {
       type: "text",
       text:
         `OK！🐻✨ 科目は **${msg}** だね！\n` +
-        "次は **単元（テーマ）** を教えてね。\n例：因数分解 / 電磁気 / 酸塩基 / 文法 / 古文読解 など",
+        "つぎは **単元（テーマ）** を教えてね。\n例：因数分解 / 波動 / 酸塩基 / 文法 / 古文読解 …"
     });
   }
 
-  // STEP1：単元 → 講義生成
+  // ------------------------------
+  // STEP1：単元を受け取る → 講義スタート
+  // ------------------------------
   if (state.step === 1) {
     state.unit = msg;
     state.step = 2;
 
+    // GPT に講義ノートを生成させる
     const lecture = await openaiChat(`
-あなたは優しく丁寧に教える「くまお先生」です。
+あなたは優しく丁寧で、生徒のやる気を引き出す「くまお先生」です。
 
 【目的】
-生徒がノートを取りやすいように、要点がまとまった「講義ノート」を作る。
+生徒がノートにまとめやすい、体系的でわかりやすい講義をする。
 
 【講義の条件】
-- 見出し + 箇条書き などで整理
-- 重要ポイントを順番に説明
-- 必要なら簡単な例題を入れてもよい
-- 数式はLINEで崩れないように (a)/(b), √(), x^n などで表現
-- トーンは優しくフレンドリー
+- 見出し → ポイント → 例 の順に整理
+- 数式や図解イメージの言語化OK
+- 難しい部分は必ず噛み砕く
+- くまお先生の温かい雰囲気
+- 長すぎず、しかし内容は充実させる
 
-【出力】
-講義本文のみ
+【出力形式】
+講義ノートのみ（Markdown不要）
 
 科目：${state.subject}
 単元：${state.unit}
-`);
+    `);
+
+    state.lectureNote = lecture;
 
     return client.replyMessage(ev.replyToken, {
       type: "text",
       text:
-        "📘 **くまお先生の講義ノート**\n" +
-        sanitize(lecture) +
-        "\n\n次はどうする？\n・「もう1回ききたい」\n・「別の単元」\n・「演習したい！」\n・「メニュー」",
+        "📘 **くまお先生の講義ノート**\n\n" +
+        lecture +
+        "\n\n🐻✨ ここまでどうかな？\n気になるところを質問してくれたら、なんでも深掘りして説明するよ！\n\n" +
+        "・わからないところを聞く\n" +
+        "・別の例を見たい\n" +
+        "・さらに難しい内容を知りたい\n" +
+        "・演習したい！\n" +
+        "・メニュー\n"
     });
   }
 
-  // STEP2：講義後の分岐
+  // ------------------------------
+  // STEP2：自由対話フェーズ（永続ステップ）
+  // ------------------------------
   if (state.step === 2) {
-    if (msg === "もう1回ききたい") {
-      state.step = 1;
-      return handleLectureMode(ev, state);
+
+    // ✨ メニューへ戻る
+    if (msg === "メニュー") {
+      globalState[userId] = { mode: "menu" };
+      return replyMenu(ev.replyToken);
     }
 
+    // ✨ 別の単元
     if (msg === "別の単元") {
       state.step = 1;
       return client.replyMessage(ev.replyToken, {
         type: "text",
-        text: "OK！🐻✨ 新しい単元を教えてね！",
+        text: "OK！🐻✨ 新しい単元を教えてね！"
       });
     }
 
+    // ✨ 演習したい
     if (msg === "演習したい！") {
       return startExerciseMode(ev);
     }
 
-    if (msg === "メニュー") {
-      globalState[ev.source.userId] = { mode: "menu" };
-      return replyMenu(ev.replyToken);
-    }
+    // ✨ 生徒が質問 → 深掘り解説
+    const deeper = await openaiChat(`
+あなたは「くまお先生」です。
+以下の講義内容を踏まえ、 生徒の質問に対して
+・丁寧に
+・わかりやすく
+・寄り添って
+・必要なら例や図解を加えて
+説明してください。
+
+講義ノート：
+${state.lectureNote}
+
+生徒の質問：
+${msg}
+
+出力：説明テキストのみ
+    `);
 
     return client.replyMessage(ev.replyToken, {
       type: "text",
       text:
-        "次はどうする？\n\n・「もう1回ききたい」\n・「別の単元」\n・「演習したい！」\n・「メニュー」",
+        deeper +
+        "\n\n🐻✨ 他にも知りたいところがあれば、何でも聞いてね！\n\n" +
+        "・別の単元\n・演習したい！\n・メニュー"
     });
   }
 }
