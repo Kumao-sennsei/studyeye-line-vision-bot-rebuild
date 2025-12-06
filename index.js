@@ -260,6 +260,17 @@ function shuffle(arr) {
   return arr.sort(() => Math.random() - 0.5);
 }
 
+async function handlePostback(ev) {
+  const data = ev.postback.data; // 例：choice=A
+  const userId = ev.source.userId;
+
+  // 🟣 4択の回答処理（中身はこのあと作る）
+  if (data.startsWith("choice=")) {
+    const selected = data.replace("choice=", ""); // A/B/C/D
+    return processChoice(ev, selected);
+  }
+}
+
 // 🚀 起動
 const PORT = process.env.PORT || 8880;
 // ヘルスチェック
