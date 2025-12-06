@@ -743,15 +743,75 @@ ${state.explanation}
 
 
     // ---------------------------------------------------------
-    // 🟦 STEP6：まとめ＋類題
-    // ---------------------------------------------------------
-    case 6: {
-      state.step = 0;
-      return client.replyMessage(ev.replyToken, {
-        type: "text",
-        text: "これで答えまで完璧だよ！🐻✨\n最後にもう1問だけ類題を出してみるね📘"
-      });
-    }
+// 🟦 STEP6：まとめ＋類題（4択なし）
+// ---------------------------------------------------------
+case 6: {
+
+  const prompt = `
+あなたは優しく寄り添うスーパー全科目先生くまおです。
+
+【目的】
+1. 今までの解説を簡潔にまとめて生徒に自信をつける。
+2. 仕上げとして類題を1問だけ作り、答えと解説をつける。
+3. 類題には4択をつけてはいけません。
+
+【類題の仕様】
+- 元の問題と「似ているが少しだけ変化」がある問題を作る
+- 解説はやさしく、ステップごとに分かりやすく
+- 答えを最後に明確に書く
+- トーンは通常くまお（優しく丁寧）
+- 4択は絶対につけない（重要）
+
+【出力形式】
+{
+ "summary": "〜〜〜（まとめ）",
+ "related": {
+     "question": "〜〜〜（類題）",
+     "explanation": "〜〜〜（わかりやすい解説）",
+     "answer": "〜〜〜"
+ }
+}
+
+問題文：
+${state.question.text || "[画像]"}
+
+生徒の答え：
+${state.answer}
+
+前ステップまでの解説：
+${state.explanation}
+`;
+
+  const res = await openaiChat(prompt);
+
+  let ai;
+  try {
+    ai = JSON.parse(res);
+  } catch (e) {
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: "ごめんね💦 類題をうまく作れなかったみたい…もう一度試してもらえる？🐻"
+    });
+  }
+
+  // 会話をリセット（新しい問題に備える）
+  state.step = 0;
+  state.lastChoices = null;
+  state.correct = null;
+
+  // まとめ＋類題を返す
+  const msg =
+    `📘 **まとめ**\n${ai.summary}\n\n` +
+    `📘 **類題**\n${ai.related.question}\n\n` +
+    `📘 **解説**\n${ai.related.explanation}\n\n` +
+    `【答え】${ai.related.answer}\n\n` +
+    "🐻✨よく頑張ったね！もう少し挑戦してみる？それとも別の問題を送る？";
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: msg
+  });
+}
 
     // ---------------------------------------------------------
     default:
