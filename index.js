@@ -416,37 +416,73 @@ async function handleQuestionInput(ev) {
       });
     }
 
-    // ---------------------------------------------------------
-    // 🟦 STEP2：問題の意図（何を聞かれている？）
-    // ---------------------------------------------------------
-    case 2: {
-      const prompt = `
-あなたは生徒に寄り添う優しいスーパー全科目先生くまおです。
-次の問題が「何を聞いているか」を短くまとめ、その後に確認用の4択を作成してください。
+// ---------------------------------------------------------
+// 🟦 STEP2：問題の意図（何を聞かれている？）＋4択生成
+// ---------------------------------------------------------
+case 2: {
+  // 正解位置を A/B/C からランダム決定
+  const positions = ["A", "B", "C"];
+  const correctPos = positions[Math.floor(Math.random() * 3)];
+
+  // GPT に4択を生成させるプロンプト
+  const prompt = `
+あなたは優しく丁寧に寄り添うスーパー全科目先生くまおです。
+
+目的：生徒が「この問題が何を聞いているのか」を理解できているかを確認したい。
+
+【生成するもの】
+1. 問題の意図を短くまとめた summary（←ここはくまおが優しく話すトーンOK）
+2. 理解チェック4択（A〜D）
+   - A/B/C：文章は淡々と統一
+   - ${correctPos} が正解
+   - 他の2つは：
+        ・1つは「ちょい惑わせ」（よくある誤解）
+        ・1つは「難しめのひっかけ」（高学年が間違えやすい）
+   - D は必ず「もっと詳しく教えて！」
 
 問題文：
 ${state.question.text || "[画像]"}
-解答：${state.answer}
 
-※ 注意：正解は A/B/C のどれかにランダムに設定してください。
-D は必ず「もっと詳しく教えて！」にしてください。
+生徒の答え：
+${state.answer}
 
-出力形式：
+【出力形式（必須）】
 {
- "summary": "〜〜〜〜",
- "choices": { "A":"〜", "B":"〜", "C":"〜", "D":"もっと詳しく教えて！" },
- "correct": "A/B/C のいずれか"
+ "summary": "〜〜〜（優しい口調）",
+ "choices": {
+   "A": "〜〜〜（淡々）",
+   "B": "〜〜〜（淡々）",
+   "C": "〜〜〜（淡々）",
+   "D": "もっと詳しく教えて！"
+ },
+ "correct": "${correctPos}"
 }
 `;
 
-      const ai = await openaiChat(prompt);
+  const res = await openaiChat(prompt);
 
-      state.step = 3;
-      state.lastChoices = ai.choices;
-      state.correct = ai.correct;
+  let ai;
+  try {
+    ai = JSON.parse(res);
+  } catch (e) {
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: "ごめんね💦 もう一度問題文を送ってくれる？🐻"
+    });
+  }
 
-      return flexChoiceMessage(ev.replyToken, ai.summary, ai.choices);
-    }
+  // 状態保存
+  state.summary = ai.summary;
+  state.lastChoices = ai.choices;
+  state.correct = ai.correct;
+
+  // 次のステップへ
+  state.step = 3;
+
+  // 4択をFlexメッセージで返す
+  return flexChoiceMessage(ev.replyToken, ai.summary, ai.choices);
+}
+
 
     // ---------------------------------------------------------
     // 🟦 STEP3：解説フェーズ（4択の回答処理）
