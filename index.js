@@ -225,3 +225,53 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`🧪 StudyEye LINE Bot Running on port ${PORT}`);
 });
 
+function replyMenu(replyToken) {
+  const menuText = `
+はじめまして〜🐻✨  
+くまお先生だよ。
+
+わからないところや、学びたいところがあったら  
+いっしょにゆっくり進めていこうね。
+
+画像は100％読み取れないこともあるから、  
+読めなかったら文章で送ってくれても大丈夫だよ🌱  
+数学・物理・化学は、答えを先に教えてくれると  
+考え方をもっとていねいに説明できるよ✨
+
+さて、今日はどうしたいかな？  
+  `.trim();
+
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text: menuText,
+    quickReply: {
+      items: [
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "質問したいよ〜🐻",
+            text: "質問したいよ〜🐻"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "授業をうけたいな✨",
+            text: "授業をうけたいな✨"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "演習したい！",
+            text: "演習したい！"
+          }
+        }
+      ]
+    }
+  });
+}
+
