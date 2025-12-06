@@ -359,7 +359,7 @@ async function handleQuestionInput(ev) {
 
     case 0:
       // 🟦 STEP0：問題を待つフェーズ
-      // （ここに後からSTEP0の中身を入れる）
+    
       break;
 
     case 1:
