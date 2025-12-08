@@ -407,53 +407,88 @@ async function judgeExercise(ev, state) {
   });
 }
 // ================================================
-// Part6: 画像 → 数学/物理/化学の問題解析（改良版）
+// Part6: 画像 → 数学/物理/化学の問題解析エンジン（完全版）
 // ================================================
+
+// 画像使用枚数カウンタ（1日ごとにリセット）
+const imageCount = {};
+
+// JST日付を取得する関数
+function getJSTDateString() {
+  const now = new Date();
+  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+  return jst.toISOString().slice(0, 10); // "YYYY-MM-DD"
+}
+
 async function handleImage(ev) {
   const userId = ev.source.userId;
+  const today = getJSTDateString();
 
-  // 画像バイナリを取得
+  // カウント初期化（新しい日ならリセット）
+  if (!imageCount[userId] || imageCount[userId].date !== today) {
+    imageCount[userId] = { date: today, used: 0 };
+  }
+
+  // 1日の上限チェック
+  if (imageCount[userId].used >= 10) {
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text:
+        "今日の画像質問は上限に達しちゃったみたいだよ🐻💦\n" +
+        "また明日なら何枚でも送れるからね！"
+    });
+  }
+
+  // カウント増加
+  imageCount[userId].used++;
+
+  // 画像バイナリ取得
   const stream = await client.getMessageContent(ev.message.id);
   const chunks = [];
-  for await (const c of stream) chunks.push(c);
+  for await (const chunk of stream) chunks.push(chunk);
   const b64 = Buffer.concat(chunks).toString("base64");
 
-  // OpenAI に画像解析を依頼
-  const raw = await openaiChat(
+  // GPT4.1 で画像解析
+  const response = await openaiChat(
     [
       {
         role: "system",
         content: `
-あなたは優しく丁寧に教える「くまお先生」です。
+あなたは、優しく丁寧に寄り添う「くまお先生」です。
 
-【出力ルール】
-・Markdown記号（#, *, _, **, ``` など）は絶対に使わない。
-・数式は LINE で崩れない形に必ず変換する。
-   例: 分数 → (a)/(b)
-       ルート → sqrt(3)
-       べき乗 → x^2
-       シグマや積分は説明的に書く。
-・式を返す前に必ず自分で読みやすさチェックをする。
-・必要なら先生の口頭説明を添えて読みやすくする。
-・最後に「つづけて質問してもいいよ」と優しく促す。
-        `
+【会話ルール】
+- Markdown記号（#, *, _, ~, >, \`, ``` など）は一切使わない。
+- 数式は LINE 向けに ( ), /, ×, ÷, √, ^ を使う。
+- 見づらい式には、先生の口頭説明を追加する。
+- 生徒が安心する口調でゆっくり説明する。
+
+【画像解析の手順】
+1. 問題文を読み取る
+2. 解くための手順を丁寧に説明する
+3. 最後に必ず一行で 【答え】〜 を書く
+
+【禁止】
+- 「計算機を用いて」など ChatGPT 特有の表現は禁止
+- 「Markdown」やコードブロック表現は禁止
+
+とにかく生徒が安心して理解できる説明をすること。
+      `
       },
       {
         role: "user",
         content: [
-          { type: "text", text: "この画像の問題を読み取り、丁寧に解説してください。" },
+          { type: "text", text: "この画像の問題を読み取って、優しく説明してください。" },
           { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
         ]
       }
     ],
-    "normal"
+    "extreme" // gpt-4.1 を使用
   );
 
-  // 数式整形フィルタに通す
-  const cleaned = sanitizeMath(raw);
+  const text = sanitizeMath(response);
 
   return client.replyMessage(ev.replyToken, {
     type: "text",
-    text: cleaned
+    text
   });
 }
