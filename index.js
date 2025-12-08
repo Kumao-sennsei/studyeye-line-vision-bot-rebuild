@@ -501,112 +501,56 @@ async function judgeExercise(ev, state) {
   });
 }
 // ================================================
-// Part6: 画像 → 数学/物理/化学の問題解析エンジン（Bトーン仕様）
+// Part6: 画像 → 数学/物理/化学の問題解析エンジン（答えアリ/ナシ対応）
 // ================================================
 
-// 画像が届いた瞬間：まずは生徒に声かけして答えを聞く
-async function handleImage(event) {
-  const userId = event.source.userId;
-
-  // ユーザー状態がまだ無い場合は作る
-  if (!globalState[userId]) {
-    globalState[userId] = {};
-  }
+async function handleImage(ev) {
+  const userId = ev.source.userId;
   const state = globalState[userId];
 
-  // STEP1: 先に「答えの有無を聞くメッセージ」を返す（Bトーン）
-  await client.replyMessage(event.replyToken, {
-    type: "text",
-    text:
-      "画像ありがとう〜🐻✨ いま読んでいくね！\n" +
-      "ところでね、もし“答え”が分かってたら教えてほしいんだ。\n" +
-      "答えを知っていると、先生の解説がもっとピタッと合わせられるんだよ🔥\n\n" +
-      "分かっていたらその答えをそのまま送ってね。\n" +
-      "もし分からなかったら「わからない」で大丈夫だよ🐻💛"
-  });
-
-  // 画像データを先に保存しておく（あとで解析に使う）
-  const stream = await client.getMessageContent(event.message.id);
+  // 画像データ取得
+  const stream = await client.getMessageContent(ev.message.id);
   const chunks = [];
   for await (const chunk of stream) chunks.push(chunk);
   const b64 = Buffer.concat(chunks).toString("base64");
 
-  state.waitingImageAnswer = true;
-  state.lastImageBase64 = b64;
+  // 生徒から答えをもらっているか？
+  const studentAnswer = state.imageProvidedAnswer || null;
 
-  return;
-}
+  // 使い終わったので初期化
+  state.imageProvidedAnswer = null;
 
-
-// 生徒の返答をうけて画像解析スタート
-async function handleImageAnswer(event, state) {
-  const text = event.message.text.trim();
-  const b64 = state.lastImageBase64;
-
-  // YES（答え入力あり）
-  if (text !== "わからない") {
-    state.imageKnownAnswer = text;
-  } else {
-    state.imageKnownAnswer = null;
-  }
-
-  // ここで GPT-4.1 に画像解析させる
+  // GPT へ渡すプロンプト（4.1使用）
   const messages = [
     {
       role: "system",
       content:
-        "あなたは『くまお先生』です。" +
-        "画像の中の数学/物理/化学の問題を正確に読み取り、読みやすい文章にして説明します。" +
-        "数式は全部 ( ), /, *, sqrt(), ^ を使ったプレーンテキストで書くこと。" +
-        "Markdown記号（*, #, _, ~, >, `）は禁止。" +
-        "くまお先生の丁寧で優しい話し方で、絵文字も適度に使う。" +
-        "必ず、本当に授業しているような自然な流れで教えること。"
+        "あなたは優しく丁寧に寄り添う『くまお先生』です。" +
+        "画像の数式や問題文を正確に読解し、LINEで読みやすいプレーンテキストで解説します。" +
+        "数式は必ず *(), /, ^, sqrt()* を使ったテキスト形式にすること。" +
+        "Markdownは禁止。" +
+        "板書のように丁寧にステップで説明し、最後に『つづけて質問してもいいよ🐻✨』をつけてください。"
     },
     {
       role: "user",
       content: [
-        { type: "text", text: "次の画像の問題を読み取って、丁寧に解説してね。" },
+        { type: "text", text: studentAnswer
+            ? `この画像の問題を読み取って、生徒の答え ${studentAnswer} が合っているかも踏まえて説明してください。`
+            : "この画像の問題を読み取って、優しく丁寧に解説してください。" 
+        },
         { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
       ]
     }
   ];
 
-  // 答えが分かっている場合は GPT にヒントとして渡す
-  if (state.imageKnownAnswer) {
-    messages.push({
-      role: "user",
-      content:
-        `生徒が答えとして「${state.imageKnownAnswer}」と言っています。` +
-        "これを参考にしつつ、問題文の読み取りと解説を行ってください。"
-    });
-  }
-
   // GPT-4.1 で解析
-  const aiText = await openaiChat(messages, "extreme"); // 4.1 を使用
+  const ai = await openaiChat(messages, "extreme"); // ← 画像なので最強モード
 
-  // 数式整形
-  const finalText = sanitizeMath(aiText);
+  // 整形して返答
+  const cleaned = sanitizeMath(ai);
 
-  // 完成した解説を返す
-  await client.replyMessage(event.replyToken, {
+  return client.replyMessage(ev.replyToken, {
     type: "text",
-    text: finalText
+    text: cleaned
   });
-
-  // 後処理
-  state.waitingImageAnswer = false;
-  state.lastImageBase64 = null;
-  state.imageKnownAnswer = null;
 }
-
-
-// ================================================
-// 画像回答ルーター
-// ================================================
-async function routeImageIfNeeded(event, state) {
-  if (!state.waitingImageAnswer) return false;
-
-  await handleImageAnswer(event, state);
-  return true;
-}
-
