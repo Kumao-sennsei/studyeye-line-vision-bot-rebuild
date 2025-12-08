@@ -35,3 +35,30 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 // サーバー起動
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log("Server running:", port));
+
+// ================================================
+// Part2: OpenAI 共通処理（壊れない超シンプル版）
+// ================================================
+async function callOpenAI(messages) {
+  try {
+    const res = await axios.post(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        model: "gpt-4o-mini",     // 軽くて速い
+        temperature: 0.4,
+        messages,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+      }
+    );
+
+    return res.data.choices?.[0]?.message?.content || "返事が読み取れなかったよ💦";
+  } catch (err) {
+    console.error("OpenAI error:", err.response?.data || err.message);
+    return "OpenAIとの通信でエラーが発生しちゃったよ🐻💦";
+  }
+}
+
