@@ -416,88 +416,112 @@ async function judgeExercise(ev, state) {
   });
 }
 // ================================================
-// Part6: 画像 → 数学/物理/化学の問題解析エンジン（完全版）
+// Part6: 画像 → 数学/物理/化学の問題解析エンジン（Bトーン仕様）
 // ================================================
 
-// 画像使用枚数カウンタ（1日ごとにリセット）
-const imageCount = {};
+// 画像が届いた瞬間：まずは生徒に声かけして答えを聞く
+async function handleImage(event) {
+  const userId = event.source.userId;
 
-// JST日付を取得する関数
-function getJSTDateString() {
-  const now = new Date();
-  const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-  return jst.toISOString().slice(0, 10); // "YYYY-MM-DD"
-}
-
-async function handleImage(ev) {
-  const userId = ev.source.userId;
-  const today = getJSTDateString();
-
-  // カウント初期化（新しい日ならリセット）
-  if (!imageCount[userId] || imageCount[userId].date !== today) {
-    imageCount[userId] = { date: today, used: 0 };
+  // ユーザー状態がまだ無い場合は作る
+  if (!globalState[userId]) {
+    globalState[userId] = {};
   }
+  const state = globalState[userId];
 
-  // 1日の上限チェック
-  if (imageCount[userId].used >= 10) {
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text:
-        "今日の画像質問は上限に達しちゃったみたいだよ🐻💦\n" +
-        "また明日なら何枚でも送れるからね！"
-    });
-  }
+  // STEP1: 先に「答えの有無を聞くメッセージ」を返す（Bトーン）
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text:
+      "画像ありがとう〜🐻✨ いま読んでいくね！\n" +
+      "ところでね、もし“答え”が分かってたら教えてほしいんだ。\n" +
+      "答えを知っていると、先生の解説がもっとピタッと合わせられるんだよ🔥\n\n" +
+      "分かっていたらその答えをそのまま送ってね。\n" +
+      "もし分からなかったら「わからない」で大丈夫だよ🐻💛"
+  });
 
-  // カウント増加
-  imageCount[userId].used++;
-
-  // 画像バイナリ取得
-  const stream = await client.getMessageContent(ev.message.id);
+  // 画像データを先に保存しておく（あとで解析に使う）
+  const stream = await client.getMessageContent(event.message.id);
   const chunks = [];
   for await (const chunk of stream) chunks.push(chunk);
   const b64 = Buffer.concat(chunks).toString("base64");
 
-  // GPT4.1 で画像解析
-  const response = await openaiChat(
-    [
-      {
-        role: "system",
-        content: `
-あなたは、優しく丁寧に寄り添う「くまお先生」です。
+  state.waitingImageAnswer = true;
+  state.lastImageBase64 = b64;
 
-【会話ルール】
-- Markdown記号（#, *, _, ~, >, \`, ``` など）は一切使わない。
-- 数式は LINE 向けに ( ), /, ×, ÷, √, ^ を使う。
-- 見づらい式には、先生の口頭説明を追加する。
-- 生徒が安心する口調でゆっくり説明する。
-
-【画像解析の手順】
-1. 問題文を読み取る
-2. 解くための手順を丁寧に説明する
-3. 最後に必ず一行で 【答え】〜 を書く
-
-【禁止】
-- 「計算機を用いて」など ChatGPT 特有の表現は禁止
-- 「Markdown」やコードブロック表現は禁止
-
-とにかく生徒が安心して理解できる説明をすること。
-      `
-      },
-      {
-        role: "user",
-        content: [
-          { type: "text", text: "この画像の問題を読み取って、優しく説明してください。" },
-          { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
-        ]
-      }
-    ],
-    "extreme" // gpt-4.1 を使用
-  );
-
-  const text = sanitizeMath(response);
-
-  return client.replyMessage(ev.replyToken, {
-    type: "text",
-    text
-  });
+  return;
 }
+
+
+// 生徒の返答をうけて画像解析スタート
+async function handleImageAnswer(event, state) {
+  const text = event.message.text.trim();
+  const b64 = state.lastImageBase64;
+
+  // YES（答え入力あり）
+  if (text !== "わからない") {
+    state.imageKnownAnswer = text;
+  } else {
+    state.imageKnownAnswer = null;
+  }
+
+  // ここで GPT-4.1 に画像解析させる
+  const messages = [
+    {
+      role: "system",
+      content:
+        "あなたは『くまお先生』です。" +
+        "画像の中の数学/物理/化学の問題を正確に読み取り、読みやすい文章にして説明します。" +
+        "数式は全部 ( ), /, *, sqrt(), ^ を使ったプレーンテキストで書くこと。" +
+        "Markdown記号（*, #, _, ~, >, `）は禁止。" +
+        "くまお先生の丁寧で優しい話し方で、絵文字も適度に使う。" +
+        "必ず、本当に授業しているような自然な流れで教えること。"
+    },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "次の画像の問題を読み取って、丁寧に解説してね。" },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
+      ]
+    }
+  ];
+
+  // 答えが分かっている場合は GPT にヒントとして渡す
+  if (state.imageKnownAnswer) {
+    messages.push({
+      role: "user",
+      content:
+        `生徒が答えとして「${state.imageKnownAnswer}」と言っています。` +
+        "これを参考にしつつ、問題文の読み取りと解説を行ってください。"
+    });
+  }
+
+  // GPT-4.1 で解析
+  const aiText = await openaiChat(messages, "extreme"); // 4.1 を使用
+
+  // 数式整形
+  const finalText = sanitizeMath(aiText);
+
+  // 完成した解説を返す
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text: finalText
+  });
+
+  // 後処理
+  state.waitingImageAnswer = false;
+  state.lastImageBase64 = null;
+  state.imageKnownAnswer = null;
+}
+
+
+// ================================================
+// 画像回答ルーター
+// ================================================
+async function routeImageIfNeeded(event, state) {
+  if (!state.waitingImageAnswer) return false;
+
+  await handleImageAnswer(event, state);
+  return true;
+}
+
