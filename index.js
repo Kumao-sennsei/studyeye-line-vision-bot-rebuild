@@ -182,6 +182,85 @@ if (await routeImageIfNeeded(event, state)) {
   });
 }
 // ================================================
+// Part X: routeImageIfNeeded（画像→回答誘導ルーター）
+// ================================================
+
+// 画像解析が必要なキーワード
+const IMAGE_TRIGGER_WORDS = [
+  "画像", "写真", "これ解いて", "この問題", "わからない", "読んで",
+  "問題の画像", "この式", "この図", "図形これ", "教科書これ"
+];
+
+async function routeImageIfNeeded(event, state) {
+  const text = event.message.text.trim();
+
+  // ❶ すでに「画像の答えを送ってくれるか？」の確認中なら分岐
+  if (state.waitingForImageAnswerConfirm) {
+    const yes = ["はい", "送れる", "ok", "おけ", "いいよ"];
+    const no = ["無理", "送れない", "分からない", "なし"];
+
+    if (yes.some(x => text.includes(x))) {
+      state.waitingForImageAnswerConfirm = false;
+      state.waitingImageAnswer = true;
+
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "ありがとう🐻✨ じゃあ画像と一緒に“答え”も送ってね！"
+      });
+      return true;
+    }
+
+    if (no.some(x => text.includes(x))) {
+      state.waitingForImageAnswerConfirm = false;
+      state.waitingImageAnswer = false;
+
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "了解だよ🐻✨ じゃあ画像だけ送ってくれたら読み取って説明するね。"
+      });
+      return true;
+    }
+
+    // その他の返事 → 再度促す
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "もし答えも送れるなら、教えてね🐻✨ 送れなければ「送れない」でいいよ！"
+    });
+    return true;
+  }
+
+  // ❷ 生徒が答えを送るフェーズ
+  if (state.waitingImageAnswer) {
+    state.waitingImageAnswer = false;
+    state.imageProvidedAnswer = text; // 答えを保存
+
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "ありがとう🐻✨ じゃあ画像を送ってね！ 読み取って丁寧に説明するよ。"
+    });
+
+    return true;
+  }
+
+  // ❸ テキストから「画像が来る予兆か？」を判断
+  if (IMAGE_TRIGGER_WORDS.some(w => text.includes(w))) {
+    state.waitingForImageAnswerConfirm = true;
+
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "問題の画像を読んで説明するね🐻✨\n" +
+        "もし“自分の答え”も送ってくれると、解説の精度がもっと高くなるよ。\n\n" +
+        "答えも送れる？（送れる / 送れない）"
+    });
+
+    return true;
+  }
+
+  return false; // → 通常FREEモードへ
+}
+
+// ================================================
 // Part4: FREEモード（くまお先生の思考エンジン）
 // ================================================
 
