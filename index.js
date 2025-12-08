@@ -177,4 +177,115 @@ async function handleFreeText(ev, state) {
     text: response
   });
 }
+// ================================================
+// Part5: 演習モード（1問 → 解答 → 判定）
+// ================================================
+
+// 生徒が「演習したい」と言ったら呼ばれる
+async function sendExerciseQuestion(ev, state) {
+  // GPTにランダムで1問作らせる
+  const question = await openaiChat([
+    {
+      role: "system",
+      content: `
+あなたは優しく丁寧に教える「くまお先生」です。
+中高生向けに、数学・物理・化学からランダムで短く明確な演習問題を1問だけ出してください。
+「問題文のみ」を返してください。
+`
+    }
+  ]);
+
+  state.exercise = {
+    step: 1,
+    question,
+    answer: null
+  };
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text:
+      "📘 **演習問題だよ！**\n\n" +
+      question +
+      "\n\n解けたら答えを送ってね🐻✨"
+  });
+}
+
+
+// 生徒が答えを送ったら判定する
+async function handleExerciseMode(ev, state) {
+  const text = ev.message.text.trim();
+
+  // -----------------------
+  // STEP1：回答を受け取る
+  // -----------------------
+  if (state.exercise.step === 1) {
+    state.exercise.answer = text;
+    state.exercise.step = 2;
+
+    return judgeExercise(ev, state);
+  }
+}
+
+
+// 判定エンジン
+async function judgeExercise(ev, state) {
+  const q = state.exercise.question;
+  const a = state.exercise.answer;
+
+  const evaluation = await openaiChat([
+    {
+      role: "system",
+      content: `
+あなたは優しく丁寧に寄り添う「くまお先生」です。
+
+【目的】
+生徒の回答が合っているか判定し、
+合っていたら褒めて、間違えていたらスーパーくまお先生で丁寧に励ましながら教える。
+
+【出力形式】
+{
+ "correct": true/false,
+ "explanation": "くまお先生の説明文（やさしい口調・例えOK）"
+}
+`
+    },
+    {
+      role: "user",
+      content: `問題：${q}\n生徒の答え：${a}`
+    }
+  ]);
+
+  let ai;
+  try { ai = JSON.parse(evaluation); }
+  catch {
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: "判定がちょっと乱れちゃった💦 もう一度答え送れる？🐻"
+    });
+  }
+
+  // 正解
+  if (ai.correct) {
+    state.exercise = null; // 終了
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text:
+        "💮 **正解！！すごいね！**\n\n" +
+        ai.explanation +
+        "\n\n次どうする？\n・「もう1問！」\n・「難しめ！」\n・「メニュー」"
+    });
+  }
+
+  // 不正解：スーパーくまお先生で励まし
+  state.exercise = null;
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text:
+      "🐻💛 だいじょうぶ。間違えるのは成長のチャンスだよ。\n\n" +
+      ai.explanation +
+      "\n\n次どうする？\n・「もう1問！」\n・「難しめ！」\n・「メニュー」"
+  });
+}
 
