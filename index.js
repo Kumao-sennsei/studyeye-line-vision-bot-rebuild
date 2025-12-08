@@ -122,54 +122,60 @@ function sanitizeMath(text = "") {
 }
 
 // ================================================
-// Part3: FREEモードのメインルーター
+// Part3: FREEモードのイベントルーター（完成版）
 // ================================================
+
 async function handleEvent(event) {
   const userId = event.source.userId;
 
-  // 初回設定
+  // 初期化
   if (!globalState[userId]) {
     globalState[userId] = {
       mode: "free",
-      lastTopic: null,
-      lastAnswer: null,
       exercise: null,
+      lastTopic: null,
+      lastAnswer: null
     };
   }
 
   const state = globalState[userId];
 
-  // 画像 → 数学/物理/化学の解析へ
+  // -------------------------
+  // 画像 → 画像解析へ
+  // -------------------------
   if (event.type === "message" && event.message.type === "image") {
     return handleImage(event);
   }
 
+  // -------------------------
   // テキスト
+  // -------------------------
   if (event.type === "message" && event.message.type === "text") {
     const text = event.message.text.trim();
 
-    // ▼ 強制メニュー
+    // メニュー
     if (text === "メニュー") {
       state.mode = "free";
       state.exercise = null;
       return replyMenu(event.replyToken);
     }
 
-    // ▼ 演習モード中なら優先
+    // 演習モード中（回答の判定へ）
     if (state.exercise && state.exercise.step === 1) {
       return handleExerciseMode(event, state);
     }
 
-    // ▼ 通常FREEモードの対話処理
+    // 通常の FREE 対話
     return handleFreeText(event, state);
   }
 
   // その他
   return client.replyMessage(event.replyToken, {
     type: "text",
-    text: "メッセージを受け取ったよ🐻",
+    text: "メッセージを受け取ったよ🐻✨"
   });
 }
+
 
 // ================================================
 // Part4: FREEモード — くまお先生の思考エンジン
