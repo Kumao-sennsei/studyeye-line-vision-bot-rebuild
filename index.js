@@ -267,3 +267,136 @@ async function handleFreeText(ev, state) {
     text: sanitizeMath(await response)
   });
 }
+// ================================================
+// Part5: 演習モード（1問 → 解答受付 → 判定）
+// ================================================
+
+// 生徒が「演習したい」と言ったら呼ばれる
+async function sendExerciseQuestion(ev, state) {
+
+  // 質問が暴走しないよう exercise を初期化
+  state.exercise = {
+    step: 1,
+    question: null,
+    answer: null
+  };
+
+  const question = await openaiChat([
+    {
+      role: "system",
+      content: `
+あなたは優しい「くまお先生」です。
+中高生向けに、数学・物理・化学のどれかの
+・短くて
+・シンプルで
+・数式が崩れない
+演習問題を1問だけ出してください。
+
+LaTeXは禁止。√, /, ^, () を使ってください。
+問題文のみを返してください。
+`
+    }
+  ], "normal");
+
+  state.exercise.question = question;
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text:
+      "📘 **演習問題だよ！**\n\n" +
+      sanitizeMath(question) +
+      "\n\n解けたら答えを送ってね🐻"
+  });
+}
+
+
+// テキスト受信時 → 演習の場合はこちらに入る
+async function handleExerciseMode(ev, state) {
+  const text = ev.message.text.trim();
+
+  // エラー避け：万一 exercise が空ならFREEモードへ
+  if (!state.exercise || !state.exercise.question) {
+    return handleFreeText(ev, state);
+  }
+
+  // STEP1：生徒の答えを保存し判定へ
+  if (state.exercise.step === 1) {
+    state.exercise.answer = text;
+    state.exercise.step = 2;
+    return judgeExercise(ev, state);
+  }
+
+  // STEP2：ここに来ることは基本的にない
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: "もう一度答えを送ってくれる？🐻"
+  });
+}
+
+
+
+// 判定エンジン（安定版）
+async function judgeExercise(ev, state) {
+  const q = state.exercise.question;
+  const a = state.exercise.answer;
+
+  const evaluation = await openaiChat([
+    {
+      role: "system",
+      content: `
+あなたは「くまお先生」です。
+
+【目的】
+生徒の回答が正しいかを優しく判定し、
+・正解 → 褒める
+・不正解 → 丁寧に教え直す
+
+【出力形式（絶対に守る）】
+{
+ "correct": true または false,
+ "explanation": "やさしい口調で、途中式や考え方を言葉で教える"
+}
+
+※ LaTeX禁止。√, /, ^ を使用する。
+※ ChatGPTっぽい口調禁止。やさしい先生。
+`
+    },
+    {
+      role: "user",
+      content: `問題: ${q}\n生徒の答え: ${a}`
+    }
+  ], "hard");
+
+  let ai;
+  try {
+    ai = JSON.parse(evaluation);
+  } catch (err) {
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: "判定がうまくできなかったみたい💦 もう一度答えを送ってみてね🐻"
+    });
+  }
+
+  // 次の演習に備えて初期化
+  state.exercise = null;
+
+  // 正解
+  if (ai.correct) {
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text:
+        "💮 **正解！とってもよくできたね！**\n\n" +
+        sanitizeMath(ai.explanation) +
+        "\n\n次どうする？\n・もう1問！\n・難しめ！\n・メニュー"
+    });
+  }
+
+  // 不正解
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text:
+      "🐻💛 大丈夫だよ、間違えたところから伸びていくんだよ。\n\n" +
+      sanitizeMath(ai.explanation) +
+      "\n\n次どうする？\n・もう1問！\n・難しめ！\n・メニュー"
+  });
+}
