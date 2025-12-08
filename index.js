@@ -289,3 +289,48 @@ async function judgeExercise(ev, state) {
   });
 }
 
+// ================================================
+// Part6: 画像 → 数学/物理/化学の問題解析エンジン
+// ================================================
+
+async function handleImage(ev) {
+  const userId = ev.source.userId;
+
+  // 画像をバイナリ取得
+  const stream = await client.getMessageContent(ev.message.id);
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const b64 = Buffer.concat(chunks).toString("base64");
+
+  // GPT に画像解析を依頼
+  const response = await openaiChat([
+    {
+      role: "system",
+      content: `
+あなたは『くまお先生』です。
+画像の中の数学/物理/化学の問題を正確に読み取り、
+(1) 問題文を書き起こし
+(2) わかりやすく手順を示し
+(3) 最後に必ず一行で「【答え】〜」と書く
+という3ステップで説明してください。
+
+※ LINE で崩れない数式に変換すること。
+※ 丁寧・やさしい・寄り添い口調。
+`
+    },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "この画像の問題を読み取って解説してください。" },
+        { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
+      ]
+    }
+  ]);
+
+  const text = response;
+
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: sanitizeMath(text)
+  });
+}
