@@ -68,20 +68,68 @@ async function openaiChat(messagesOrText) {
   }
 }
 
-// 数式の整形（LINE で崩れないように変換）
-function sanitize(s = "") {
-  return s
-    .replace(/¥/g, "\\")
-    .replace(/\$\$?/g, "")
-    .replace(/\\frac{([^}]+)}{([^}]+)}/g, "($1)/($2)")
-    .replace(/\\sqrt{([^}]+)}/g, "√($1)")
-    .replace(/\^\{([^}]+)\}/g, "^$1")
-    .replace(/\\cdot/g, "×")
-    .replace(/\\times/g, "×")
-    .replace(/\\div/g, "÷")
-    .replace(/\\pm/g, "±")
-    .replace(/\\[A-Za-z]+/g, "");
+// ==========================================
+// くまお先生：数学・物理・化学の整形フィルタ
+// ==========================================
+
+function sanitizeMath(text = "") {
+  if (!text) return "";
+
+  let s = text;
+
+  // ---- LaTeX残骸の除去 ----
+  s = s.replace(/\$\$?/g, "");
+
+  // ---- 分数 ----
+  s = s.replace(/\\frac{([^}]+)}{([^}]+)}/g, "($1)/($2)");
+
+  // ---- √（平方根） ----
+  s = s.replace(/\\sqrt{([^}]+)}/g, "√($1)");
+
+  // ---- 指数 ----
+  s = s.replace(/\^\{([^}]+)\}/g, "^$1"); 
+  s = s.replace(/([A-Za-z0-9])\^([A-Za-z0-9]+)/g, "$1^$2");
+
+  // ---- 掛け算 ----
+  s = s.replace(/\\cdot|\\times/g, "×");
+
+  // ---- 割り算 ----
+  s = s.replace(/\\div/g, "÷");
+
+  // ---- ± ----
+  s = s.replace(/\\pm/g, "±");
+
+  // ---- ログ ----
+  s = s.replace(/\\log_([0-9]+)\s*\{([^}]+)\}/g, "log_$1($2)");
+
+  // ---- シグマ：Σ ----
+  s = s.replace(/\\sum_{([^}]+)}\^{([^}]+)}/g,
+    (_, from, to) =>
+      `「${from} から ${to} まで足し合わせる」`
+  );
+
+  // ---- 積分：∫ ----
+  s = s.replace(/\\int_{([^}]+)}\^{([^}]+)}/g,
+    (_, from, to) =>
+      `「${from} から ${to} まで積分する」`
+  );
+
+  // ---- ∫ f(x) dx （限界なし）----
+  s = s.replace(/\\int\s+([^d]+)dx/g,
+    (_, body) => `「${body.trim()} を積分すると…」`
+  );
+
+  // ---- その他の LaTeX コマンド削除 ----
+  s = s.replace(/\\[A-Za-z]+/g, "");
+
+  // ---- 仕上げ（スペース調整） ----
+  s = s.replace(/\s+/g, " ").trim();
+
+  return s;
 }
+
+module.exports = { sanitizeMath };
+
 
 // 「【答え】が無いときは優しい締めをつける」
 function withKumaoHighlights(s = "") {
