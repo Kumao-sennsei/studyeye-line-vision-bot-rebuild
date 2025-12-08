@@ -35,18 +35,24 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 // サーバー起動
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log("Server running:", port));
-
 // ================================================
-// Part2: OpenAI 共通処理（壊れない超シンプル版）
+// Part2: OpenAI共通処理（モデル自動切り替え）
 // ================================================
-async function callOpenAI(messages) {
+async function openaiChat(messages, level = "normal") {
   try {
+    // 難易度に応じてモデル切替
+    let model = "gpt-4o-mini";
+
+    if (level === "normal") model = "gpt-4o";           // 標準解説
+    if (level === "hard") model = "gpt-4o-turbo";      // 高度な数学・物理
+    if (level === "extreme") model = "gpt-4.1";        // 大学レベル以上
+
     const res = await axios.post(
       "https://api.openai.com/v1/chat/completions",
       {
-        model: "gpt-4o-mini",     // 軽くて速い
+        model,
         temperature: 0.4,
-        messages,
+        messages
       },
       {
         headers: {
@@ -55,12 +61,15 @@ async function callOpenAI(messages) {
       }
     );
 
-    return res.data.choices?.[0]?.message?.content || "返事が読み取れなかったよ💦";
+    return res.data.choices?.[0]?.message?.content;
+
   } catch (err) {
     console.error("OpenAI error:", err.response?.data || err.message);
-    return "OpenAIとの通信でエラーが発生しちゃったよ🐻💦";
+    return "GPTくん側でエラーが起きちゃったみたい💦 ごめんね…もう一度聞いてくれる？🐻";
   }
 }
+
+
 
 // ================================================
 // Part3: FREEモードのイベントルーター（超シンプル）
