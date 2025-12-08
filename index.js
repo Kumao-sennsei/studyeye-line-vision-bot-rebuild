@@ -407,89 +407,53 @@ async function judgeExercise(ev, state) {
   });
 }
 // ================================================
-// Part6: 画像 → 数学/物理/化学の問題解析エンジン（完全修正版）
+// Part6: 画像 → 数学/物理/化学の問題解析（改良版）
 // ================================================
-
 async function handleImage(ev) {
   const userId = ev.source.userId;
 
-  try {
-    // ----------------------------------------
-    // ① LINE画像 → Base64 取得
-    // ----------------------------------------
-    const stream = await client.getMessageContent(ev.message.id);
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    const b64 = Buffer.concat(chunks).toString("base64");
+  // 画像バイナリを取得
+  const stream = await client.getMessageContent(ev.message.id);
+  const chunks = [];
+  for await (const c of stream) chunks.push(c);
+  const b64 = Buffer.concat(chunks).toString("base64");
 
-    // ----------------------------------------
-    // ② OpenAI Vision API で画像＋文章解析
-    // ----------------------------------------
-    const res = await axios.post(
-      "https://api.openai.com/v1/chat/completions",
+  // OpenAI に画像解析を依頼
+  const raw = await openaiChat(
+    [
       {
-        model: "gpt-4o-mini",   // 画像解析もできる軽量モデル
-        messages: [
-          {
-            role: "system",
-            content: `
-あなたは『くまお先生』です。
-画像の中の数学・物理・化学の問題を読み取り、
-(1) 問題文を書き起こし
-(2) 丁寧に手順を説明
-(3) 最後に必ず「【答え】〜」を1行で書く
+        role: "system",
+        content: `
+あなたは優しく丁寧に教える「くまお先生」です。
 
-◆ ルール
-・LINE で崩れない数式に整形する（√, /, ^ など）
-・できるだけわかりやすく優しく説明する
-・禁止ワード「GPTくん側」「GPT側」「ChatGPT」などは絶対に使わない
-・必要に応じて文章で噛み砕く
-            `
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "この画像の問題を読み取り、やさしく解説してください。" },
-              { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
-            ]
-          }
-        ],
+【出力ルール】
+・Markdown記号（#, *, _, **, ``` など）は絶対に使わない。
+・数式は LINE で崩れない形に必ず変換する。
+   例: 分数 → (a)/(b)
+       ルート → sqrt(3)
+       べき乗 → x^2
+       シグマや積分は説明的に書く。
+・式を返す前に必ず自分で読みやすさチェックをする。
+・必要なら先生の口頭説明を添えて読みやすくする。
+・最後に「つづけて質問してもいいよ」と優しく促す。
+        `
       },
       {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        }
+        role: "user",
+        content: [
+          { type: "text", text: "この画像の問題を読み取り、丁寧に解説してください。" },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } }
+        ]
       }
-    );
+    ],
+    "normal"
+  );
 
-    let text = res.data.choices?.[0]?.message?.content || "画像解析に失敗したみたい…💦 もう一度送ってくれる？🐻";
+  // 数式整形フィルタに通す
+  const cleaned = sanitizeMath(raw);
 
-    // ----------------------------------------
-    // ③ 禁止ワードフィルタ（バレ防止）
-    // ----------------------------------------
-    const NG = ["GPT", "ChatGPT", "AI側", "GPTくん側", "GPT側"];
-    for (const w of NG) text = text.replaceAll(w, "サーバー側");
-
-    // ----------------------------------------
-    // ④ 数式整形
-    // ----------------------------------------
-    text = sanitizeMath(text);
-
-    // ----------------------------------------
-    // ⑤ LINEに返信
-    // ----------------------------------------
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text
-    });
-
-  } catch (err) {
-    console.error("Image error:", err.response?.data || err.message);
-
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: "サーバー側でうまく処理できなかったみたい…💦 もう一度画像を送ってくれる？🐻"
-    });
-  }
+  return client.replyMessage(ev.replyToken, {
+    type: "text",
+    text: cleaned
+  });
 }
-
