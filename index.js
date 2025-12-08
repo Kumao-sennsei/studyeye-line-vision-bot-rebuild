@@ -121,3 +121,52 @@ function sanitizeMath(text = "") {
   return t;
 }
 
+// ================================================
+// Part3: FREEモードのメインルーター
+// ================================================
+async function handleEvent(event) {
+  const userId = event.source.userId;
+
+  // 初回設定
+  if (!globalState[userId]) {
+    globalState[userId] = {
+      mode: "free",
+      lastTopic: null,
+      lastAnswer: null,
+      exercise: null,
+    };
+  }
+
+  const state = globalState[userId];
+
+  // 画像 → 数学/物理/化学の解析へ
+  if (event.type === "message" && event.message.type === "image") {
+    return handleImage(event);
+  }
+
+  // テキスト
+  if (event.type === "message" && event.message.type === "text") {
+    const text = event.message.text.trim();
+
+    // ▼ 強制メニュー
+    if (text === "メニュー") {
+      state.mode = "free";
+      state.exercise = null;
+      return replyMenu(event.replyToken);
+    }
+
+    // ▼ 演習モード中なら優先
+    if (state.exercise && state.exercise.step === 1) {
+      return handleExerciseMode(event, state);
+    }
+
+    // ▼ 通常FREEモードの対話処理
+    return handleFreeText(event, state);
+  }
+
+  // その他
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text: "メッセージを受け取ったよ🐻",
+  });
+}
