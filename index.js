@@ -153,6 +153,12 @@ async function handleEvent(event) {
   if (event.type === "message" && event.message.type === "text") {
     const text = event.message.text.trim();
 
+    // Part3 のテキストメッセージ処理内に追加する
+if (await routeImageIfNeeded(event, state)) {
+  return;
+}
+
+
     // メニュー
     if (text === "メニュー") {
       state.mode = "free";
