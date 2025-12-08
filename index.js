@@ -62,3 +62,49 @@ async function callOpenAI(messages) {
   }
 }
 
+// ================================================
+// Part3: FREEモードのイベントルーター（超シンプル）
+// ================================================
+
+async function handleEvent(event) {
+  const userId = event.source.userId;
+
+  // ユーザー状態がなければ初期化
+  if (!globalState[userId]) {
+    globalState[userId] = {
+      mode: "free",
+      lastAnswer: null,
+      lastTopic: null,
+    };
+  }
+
+  const state = globalState[userId];
+
+  // 画像メッセージ → 数学/物理/化学の問題解析へ
+  if (event.type === "message" && event.message.type === "image") {
+    return handleImage(event);
+  }
+
+  // テキストメッセージ
+  if (event.type === "message" && event.message.type === "text") {
+    const text = event.message.text.trim();
+
+    // 強制メニューコマンド（どのモードでも発動）
+    if (text === "メニュー") {
+      state.mode = "free";
+      state.lastTopic = null;
+      state.lastAnswer = null;
+      return replyMenu(event.replyToken);
+    }
+
+    // 通常の FREE 対話処理
+    return handleFreeText(event, state);
+  }
+
+  // その他（スタンプ等）
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text: "メッセージを受け取ったよ🐻✨",
+  });
+}
+
