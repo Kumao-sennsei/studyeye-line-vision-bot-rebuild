@@ -121,14 +121,7 @@ function sanitizeMath(text = "") {
   return t;
 }
 
-if (event.type === "message" && event.message.type === "text") {
-  const text = event.message.text.trim();
 
-  // Part3 のテキストメッセージ処理内に追加する
-  if (await routeImageIfNeeded(event, state)) {
-    return;
-  }
-}
 // ===============================================================
 // Part3: FREEモードのイベントルーター（完全安定版）
 // ===============================================================
