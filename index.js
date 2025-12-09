@@ -129,9 +129,10 @@ if (event.type === "message" && event.message.type === "text") {
     return;
   }
 }
-// ================================================
-// Part3: FREEモードのイベントルーター（完成版）
-// ================================================
+// ================================================================
+// Part3: FREEモードのイベントルーター（最新版・完全動作版）
+// ================================================================
+
 async function handleEvent(event) {
   const userId = event.source.userId;
 
@@ -141,25 +142,29 @@ async function handleEvent(event) {
       mode: "free",
       exercise: null,
       lastTopic: null,
-      lastAnswer: null,
-      imageProvidedAnswer: null
+      lastAnswer: null
     };
   }
 
   const state = globalState[userId];
 
-  // --------------------------
-  // 画像 → 画像解析へ
-  // --------------------------
+  // ----------------------------------------------------
+  // 画像 → 画像解析へ（答えあり／答えなしの振り分けはここ）
+  // ----------------------------------------------------
   if (event.type === "message" && event.message.type === "image") {
-    return handleImage(event);
+    return handleImage(event, state);
   }
 
-  // --------------------------
+  // ----------------------------------------------------
   // テキスト
-  // --------------------------
+  // ----------------------------------------------------
   if (event.type === "message" && event.message.type === "text") {
     const text = event.message.text.trim();
+
+    // （追加）画像回答モードへの分岐
+    if (await routeImageIfNeeded(event, state)) {
+      return;
+    }
 
     // メニュー
     if (text === "メニュー") {
@@ -176,12 +181,6 @@ async function handleEvent(event) {
     // 通常の FREE 対話
     return handleFreeText(event, state);
   }
-
-  // その他
-  return client.replyMessage(event.replyToken, {
-    type: "text",
-    text: "メッセージを受け取ったよ🐻✨"
-  });
 }
 
 // ================================================
