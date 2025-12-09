@@ -1,11 +1,11 @@
 // ================================================
-// Part1: StudyEye くまお先生ボット - 基礎コア
-// （ここは最重要。必ずファイルの最上部に置く）
+// Part1: StudyEye くまお先生ボット - 基礎コア（CJS版）
 // ================================================
 
-import express from "express";
-import line from "@line/bot-sdk";
-import fetch from "node-fetch";
+// ---- 必ず require を使う！ ----
+const express = require("express");
+const line = require("@line/bot-sdk");
+const fetch = require("node-fetch");
 
 // -----------------------------------------------
 // LINE Bot 設定
