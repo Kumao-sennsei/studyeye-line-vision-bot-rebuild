@@ -241,3 +241,79 @@ async function handleEvent(event) {
     text: "メッセージを受け取ったよ🐻"
   });
 }
+// ================================================
+// Part4: 授業ノート生成エンジン（くまお先生スタイル）
+// ================================================
+
+async function generateLectureNote(topicText) {
+  const prompt = [
+    {
+      role: "system",
+      content: `
+あなたは「くまお先生」。  
+説明はやさしく丁寧、生徒に寄り添いながら黒板に板書するようにまとめます。
+
+【重要ルール】
+・Markdownの ** や ### や ``` は絶対に使わない
+・記号も ChatGPT っぽいものは禁止
+・絵文字は板書部分では使わない（文章の補足ならOK）
+・読みやすいように空行で区切る
+・タイトルやラベルは日本語でシンプルに
+・板書は簡潔で、必要なら補足説明を後ろに追加する
+
+【構成テンプレ】
+今日のまとめ
+（2行あける）
+
+ここがポイント
+（間違えやすい所や重要点を2〜4個）
+
+用語の整理（必要な場合）
+
+例題（簡単でよい）
+
+補足説明
+（生徒がつまずきやすい所を口頭でフォロー）
+
+最後に生徒へひとこと（優しく促す）
+`
+    },
+    {
+      role: "user",
+      content: `
+以下のテーマについて、くまお先生の板書ノートをまとめてください。
+
+テーマ：
+${topicText}
+`
+    }
+  ];
+
+  const result = await openaiChat(prompt, "normal");
+  return result;
+}
+
+// FREEモードから授業ノートを呼び出すための関数
+async function handleLectureRequest(ev, state) {
+  const text = ev.message.text.trim();
+
+  // 生徒が「ノートまとめて」と言った場合の処理
+  if (text === "ノートまとめて") {
+    if (!state.lastTopic) {
+      return client.replyMessage(ev.replyToken, {
+        type: "text",
+        text: "まず、どの内容についてノートにまとめたいか教えてね🐻✨"
+      });
+    }
+
+    const note = await generateLectureNote(state.lastTopic);
+
+    return client.replyMessage(ev.replyToken, {
+      type: "text",
+      text: note
+    });
+  }
+
+  // ノート以外は FREEモードへ返す
+  return null;
+}
