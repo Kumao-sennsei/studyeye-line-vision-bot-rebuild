@@ -1,6 +1,5 @@
 // ================================================
-// StudyEye くまお先生ボット - 完全安定版 index.js
-// LINE Messaging API / OpenAI / Railway / ESM対応
+// StudyEye くまお先生 - 完全安定版 index.js（ノート生成機能統合）
 // ================================================
 
 import express from "express";
@@ -15,17 +14,8 @@ const config = {
   channelSecret: process.env.CHANNEL_SECRET,
 };
 
-if (!config.channelAccessToken || !config.channelSecret) {
-  console.error("❌ CHANNEL_ACCESS_TOKEN または CHANNEL_SECRET が設定されていません");
-}
-
 const client = new line.Client(config);
-
-// -----------------------------------------------
-// Express 初期化
-// express.json() は絶対に middleware より後に置く！
-// -----------------------------------------------
-const app = express();
+const app = express(); // express.json() は後ろで使う
 
 // -----------------------------------------------
 // グローバル state
@@ -36,8 +26,6 @@ function getUserState(userId) {
   if (!globalState[userId]) {
     globalState[userId] = {
       mode: "free",
-      exercise: null,
-      lastTopic: null,
       lastAnswer: null,
       waitingAnswer: null,
     };
@@ -46,64 +34,41 @@ function getUserState(userId) {
 }
 
 // -----------------------------------------------
-// 数式整形
+// 整形処理（Markdown禁止）
 // -----------------------------------------------
-function sanitizeMath(text) {
+function sanitize(text) {
   if (!text) return "";
-
-  let t = text;
-  t = t.replace(/[#$*_`>]/g, "");
-  t = t.replace(/\n{3,}/g, "\n\n");
-  t = t.replace(/×/g, " x ");
-  t = t.replace(/÷/g, " / ");
-  t = t.replace(/\u3000/g, " ");
-  return t.trim();
+  return text
+    .replace(/[#$*_`>]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // -----------------------------------------------
-// OpenAI 共通設定
+// OpenAI Access
 // -----------------------------------------------
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-const TEXT_MODEL_MAIN = "gpt-4o";
-const TEXT_MODEL_LIGHT = "gpt-4o-mini";
-const VISION_MODEL = "gpt-4.1";
-
-// モデル選択（超軽量判定）
-function chooseTextModel(text) {
-  return text.length < 40 ? TEXT_MODEL_LIGHT : TEXT_MODEL_MAIN;
-}
-
-// -----------------------------------------------
-// OpenAI Chat
-// -----------------------------------------------
-async function callOpenAIChat({ model, messages }) {
+async function callChat(model, messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${OPENAI_API_KEY}`,
     },
-    body: JSON.stringify({
-      model,
-      messages,
-      temperature: 0.7,
-    }),
+    body: JSON.stringify({ model, messages }),
   });
 
   if (!res.ok) {
     console.error(await res.text());
-    throw new Error("OpenAI Chat error");
+    throw new Error("Chat API error");
   }
 
   const data = await res.json();
-  return sanitizeMath(data.choices?.[0]?.message?.content || "");
+  return sanitize(data.choices?.[0]?.message?.content || "");
 }
 
-// -----------------------------------------------
-// OpenAI Vision
-// -----------------------------------------------
-async function callOpenAIVision({ imageBase64, instructions }) {
+async function callVision(imageBase64, instructions) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -111,13 +76,9 @@ async function callOpenAIVision({ imageBase64, instructions }) {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: VISION_MODEL,
+      model: "gpt-4.1",
       messages: [
-        {
-          role: "system",
-          content:
-            "あなたは数学・物理・化学の問題を優しく解説するくまお先生です。Markdown禁止。",
-        },
+        { role: "system", content: "あなたは優しい数学・理科の先生くまおです。Markdown記号は禁止。" },
         {
           role: "user",
           content: [
@@ -134,25 +95,30 @@ async function callOpenAIVision({ imageBase64, instructions }) {
 
   if (!res.ok) {
     console.error(await res.text());
-    throw new Error("Vision error");
+    throw new Error("Vision API error");
   }
 
   const data = await res.json();
-  return sanitizeMath(data.choices?.[0]?.message?.content || "");
+  return sanitize(data.choices?.[0]?.message?.content || "");
 }
 
 // -----------------------------------------------
-// 画像のバイナリ取得
+// LINE返信
+// -----------------------------------------------
+function reply(token, text) {
+  return client.replyMessage(token, { type: "text", text });
+}
+
+// -----------------------------------------------
+// 画像取得
 // -----------------------------------------------
 async function getImageBase64(messageId) {
   const stream = await client.getMessageContent(messageId);
   const chunks = [];
 
-  return await new Promise((resolve, reject) => {
-    stream.on("data", (chunk) => chunks.push(chunk));
-    stream.on("end", () => {
-      resolve(Buffer.concat(chunks).toString("base64"));
-    });
+  return new Promise((resolve, reject) => {
+    stream.on("data", (c) => chunks.push(c));
+    stream.on("end", () => resolve(Buffer.concat(chunks).toString("base64")));
     stream.on("error", reject);
   });
 }
@@ -162,35 +128,31 @@ async function getImageBase64(messageId) {
 // -----------------------------------------------
 async function handleFreeText(event, state) {
   const text = event.message.text.trim();
-  const model = chooseTextModel(text);
 
   const system =
-    "あなたは優しいくまお先生。板書風にていねいに説明。Markdown禁止。「計算機を使います」禁止。";
+    "あなたは優しいくまお先生です。板書のように1行ずつ丁寧に説明し、Markdown記号は禁止。語尾は柔らかく。";
 
-  const userPrompt =
+  const user =
     "【生徒の質問】\n" +
     text +
     "\n\n【ルール】\n" +
-    "・最初に一声かける（例：ここから一緒にやってみようか🐻）\n" +
-    "・板書のように丁寧に解説\n" +
-    "・最後に軽く励ます";
+    "・最初にひと言添える（例：ここから一緒に見ていこうか🐻）\n" +
+    "・板書風にやさしく解説\n" +
+    "・間違えやすいポイントを言及\n" +
+    "・最後に励ます";
 
-  const answer = await callOpenAIChat({
-    model,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: userPrompt },
-    ],
-  });
+  const ans = await callChat("gpt-4o", [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ]);
 
-  state.lastTopic = text;
-  state.lastAnswer = answer;
+  state.lastAnswer = ans;
 
-  return client.replyMessage(event.replyToken, { type: "text", text: answer });
+  return reply(event.replyToken, ans);
 }
 
 // -----------------------------------------------
-// 画像（答えの有無確認）
+// 画像：最初の案内
 // -----------------------------------------------
 async function handleImageFirst(event, state) {
   const base64 = await getImageBase64(event.message.id);
@@ -198,94 +160,85 @@ async function handleImageFirst(event, state) {
   state.waitingAnswer = {
     kind: "image",
     imageBase64: base64,
-    status: "waiting_student_answer",
+    status: "waiting_student",
   };
 
-  return client.replyMessage(event.replyToken, {
-    type: "text",
-    text:
-      "この問題、もし自分の答えがあれば送ってね🐻✨\n" +
-      "・答えを送る → 採点＆解説\n" +
-      "・なければ「そのまま解説して」と言ってね！",
-  });
+  return reply(
+    event.replyToken,
+    "この問題、もし自分の答えがあれば送ってね🐻✨\n・答えを送る → 採点＆解説\n・なければ「そのまま解説して」でOKだよ！"
+  );
 }
 
 // -----------------------------------------------
-// 画像（答え付き）
+// 画像：答え付き
 // -----------------------------------------------
-async function handleImageWithStudentAnswer(event, state, studentAnswer) {
+async function handleImageWithAnswer(event, state, student) {
   const base64 = state.waitingAnswer.imageBase64;
 
   const instructions =
-    "画像の問題文をきれいに書き起こし、板書のように丁寧に解説し、最後に「答え：○○」を1行でまとめてください。\n" +
-    "以下は生徒の答えです。\n\n" +
-    studentAnswer +
-    "\n\n「正解・惜しい・不正解」も必ず判定。";
+    "画像の問題文を正確に書き起こし、板書のように解説し、最後に答えを1行でまとめてください。\n" +
+    "次に、生徒の答えと比較して採点し、正解/惜しい/不正解を述べてください。\n\n" +
+    "【生徒の答え】\n" +
+    student;
 
-  const result = await callOpenAIVision({ imageBase64: base64, instructions });
+  const ans = await callVision(base64, instructions);
 
   state.waitingAnswer = null;
+  state.lastAnswer = ans;
 
-  return client.replyMessage(event.replyToken, { type: "text", text: result });
+  return reply(event.replyToken, ans);
 }
 
 // -----------------------------------------------
-// 画像（答えなし → 解説だけ）
+// 画像：答えなし
 // -----------------------------------------------
-async function handleImageExplainOnly(event, state) {
+async function handleImageExplain(event, state) {
   const base64 = state.waitingAnswer.imageBase64;
 
   const instructions =
-    "画像の問題文をきれいに書き起こし、板書のように丁寧に解説し、最後に答えを1行でまとめてください。\n" +
-    "生徒の答えはありません。";
+    "画像の問題文を正確に書き起こし、板書のように丁寧に解説してください。最後に答えを1行でまとめてください。採点は不要です。";
 
-  const result = await callOpenAIVision({ imageBase64: base64, instructions });
+  const ans = await callVision(base64, instructions);
 
   state.waitingAnswer = null;
+  state.lastAnswer = ans;
 
-  return client.replyMessage(event.replyToken, { type: "text", text: result });
+  return reply(event.replyToken, ans);
 }
 
 // -----------------------------------------------
-// メニュー
+// ノート生成（まとめて / ノート / 要点）
 // -----------------------------------------------
-function replyMenu(token) {
-  return client.replyMessage(token, {
-    type: "text",
-    text:
-      "🐻📘 くまお先生メニュー\n\n" +
-      "・普通に質問 → そのまま送ってね\n" +
-      "・問題の写真 → カメラで送ってね\n" +
-      "・答えがあるなら送ってくれると精度UP！",
-  });
-}
-
-// -----------------------------------------------
-// LINE Webhook (署名検証 OK)
-// middleware より上に express.json() を絶対置かないこと！
-// -----------------------------------------------
-app.post("/webhook", line.middleware(config), async (req, res) => {
-  res.status(200).end();
-
-  const events = req.body.events;
-  if (!events) return;
-
-  for (const event of events) {
-    try {
-      await handleEvent(event);
-    } catch (e) {
-      console.error("Event error:", e);
-    }
+async function generateNote(event, state) {
+  if (!state.lastAnswer) {
+    return reply(event.replyToken, "まだ授業の内容がないみたいだよ。何か質問してみようか🐻✨");
   }
-});
+
+  const instructions =
+    "以下の授業内容を、くまお先生のノート形式に変換してください。\n\n" +
+    "【今日のまとめ】\n" +
+    "・授業で扱ったポイントを箇条書き\n" +
+    "【ポイント】\n" +
+    "・公式や考え方を順番に簡潔に書く\n" +
+    "【解き方】\n" +
+    "数学・理科の計算問題の場合のみ、1⃣→2⃣→3⃣ の順で手順を書く\n" +
+    "【ここがポイント！】（間違えやすい部分）\n" +
+    "・簡単なチェック問題（任意）\n" +
+    "最後は「このページ、ノートに写しておくと復習しやすいよ🐻✨」と書く\n" +
+    "Markdown 記号は禁止。\n\n" +
+    "【授業内容】\n" +
+    state.lastAnswer;
+
+  const note = await callChat("gpt-4o", [
+    { role: "system", content: "あなたは優しいくまお先生。内容をノート形式に変換するプロ。" },
+    { role: "user", content: instructions },
+  ]);
+
+  return reply(event.replyToken, note);
+}
 
 // -----------------------------------------------
-// express.json() は Webhook より後ろに置く！
-// -----------------------------------------------
-app.use(express.json());
-
-// -----------------------------------------------
-// イベント振り分け
+// メインイベントハンドラ
 // -----------------------------------------------
 async function handleEvent(event) {
   if (event.type !== "message") return;
@@ -301,27 +254,42 @@ async function handleEvent(event) {
 
   // テキスト
   if (event.message.type === "text") {
-    const text = event.message.text.trim();
+    const t = event.message.text.trim();
 
-    if (text === "メニュー") {
-      return replyMenu(event.replyToken);
+    // ノート生成
+    if (
+      t.includes("まとめ") ||
+      t.includes("ノート") ||
+      t.includes("要点")
+    ) {
+      return generateNote(event, state);
     }
 
-    if (state.waitingAnswer?.status === "waiting_student_answer") {
-      if (text.includes("解説") || text.includes("そのまま")) {
-        return handleImageExplainOnly(event, state);
+    // 画像の答え待ち
+    if (state.waitingAnswer?.status === "waiting_student") {
+      if (t.includes("解説") || t.includes("そのまま")) {
+        return handleImageExplain(event, state);
       }
-      return handleImageWithStudentAnswer(event, state, text);
+      return handleImageWithAnswer(event, state, t);
     }
 
+    // FREEモード
     return handleFreeText(event, state);
   }
 }
 
 // -----------------------------------------------
-// 起動
+// Webhook（署名検証OK）
+// -----------------------------------------------
+app.post("/webhook", line.middleware(config), (req, res) => {
+  res.status(200).end();
+  const events = req.body.events || [];
+  events.forEach((ev) => handleEvent(ev));
+});
+
+// express.json() は middleware の後！
+app.use(express.json());
+
 // -----------------------------------------------
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log(`🚀 Server running on ${port}`);
-});
+app.listen(port, () => console.log("server running", port));
