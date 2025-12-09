@@ -155,3 +155,89 @@ async function handleFreeMode(event, state) {
   return replyText(event.replyToken, reply);
 }
 
+// ================================================
+// Part3: FREEモードのイベントルーター（最新版）
+// ================================================
+
+// ▼ メインイベント
+async function handleEvent(event) {
+  const userId = event.source.userId;
+
+  // 状態が無ければ初期化
+  if (!globalState[userId]) {
+    globalState[userId] = {
+      mode: "free",
+      waitingForImageAnswer: false,
+      tempImageQuestion: null,
+      tempImageAnswer: null,
+      lastTopic: null,
+      lastAnswer: null,
+    };
+  }
+
+  const state = globalState[userId];
+
+  // ▼ Postback（現状未使用）
+  if (event.type === "postback") {
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "ボタン操作を受け取ったよ🐻（まだ使わないけどね）"
+    });
+  }
+
+  // ▼ 画像メッセージ
+  if (event.type === "message" && event.message.type === "image") {
+    // 一発で画像解析へ
+    return handleImage(event, state);
+  }
+
+  // ▼ テキストメッセージ
+  if (event.type === "message" && event.message.type === "text") {
+
+    const text = event.message.text.trim();
+
+    // -------------------------------
+    // ① どの場面でも「メニュー」でリセット
+    // -------------------------------
+    if (text === "メニュー") {
+      globalState[userId] = {
+        mode: "free",
+        waitingForImageAnswer: false,
+        tempImageQuestion: null,
+        tempImageAnswer: null,
+        lastTopic: null,
+        lastAnswer: null
+      };
+      return replyMenu(event.replyToken);
+    }
+
+    // -------------------------------
+    // ② 画像の答え待ちだったらここで回収
+    // -------------------------------
+    if (state.waitingForImageAnswer) {
+      state.tempImageAnswer = text;
+      state.waitingForImageAnswer = false;
+
+      // 画像＋答えで再解析
+      return handleImageWithAnswer(event, state);
+    }
+
+    // -------------------------------
+    // ③ 演習スタートコマンド
+    // -------------------------------
+    if (text === "演習したい") {
+      return sendExerciseQuestion(event, state);
+    }
+
+    // -------------------------------
+    // ④ 通常のFREE質問処理へ
+    // -------------------------------
+    return handleFreeText(event, state);
+  }
+
+  // ▼ スタンプなど
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text: "メッセージを受け取ったよ🐻"
+  });
+}
