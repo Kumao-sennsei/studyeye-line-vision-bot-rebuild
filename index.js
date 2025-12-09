@@ -129,66 +129,62 @@ if (event.type === "message" && event.message.type === "text") {
     return;
   }
 }
-// =======================================================
-// Part3：FREEモードのイベントルーター（完成版）
-// =======================================================
+// ===============================================================
+// Part3: FREEモードのイベントルーター（完全安定版）
+// ===============================================================
 
 async function handleEvent(event) {
   const userId = event.source.userId;
 
-  // ------------------------------------
   // 初期化
-  // ------------------------------------
   if (!globalState[userId]) {
     globalState[userId] = {
       mode: "free",
       exercise: null,
       lastTopic: null,
-      lastAnswer: null,
-      waitingForAnswerChoice: false
+      lastAnswer: null
     };
   }
 
   const state = globalState[userId];
 
-  // ------------------------------------
-  // 画像メッセージ → Vision解析へ
-  // ------------------------------------
+  // -------------------------
+  // 画像 → 画像解析へ
+  // -------------------------
   if (event.type === "message" && event.message.type === "image") {
     return handleImage(event, state);
   }
 
-  // ------------------------------------
-  // テキストメッセージ
-  // ------------------------------------
+  // -------------------------
+  // テキスト
+  // -------------------------
   if (event.type === "message" && event.message.type === "text") {
     const text = event.message.text.trim();
 
-    // メニューに戻る
+    // Part3 のテキストメッセージ処理内に追加する
+    if (await routeImageIfNeeded(event, state)) {
+      return;
+    }
+
+    // メニュー
     if (text === "メニュー") {
       state.mode = "free";
       state.exercise = null;
-      state.lastTopic = null;
-      state.lastAnswer = null;
-      state.waitingForAnswerChoice = false;
       return replyMenu(event.replyToken);
     }
 
-    // 画像の答え入力待ち（答えあり画像のとき）
-    if (state.waitingForAnswerChoice) {
-      return handleImageAnswerInput(event, state, text);
-    }
-
-    // 演習モード中（後でPart6で使う）
+    // 演習モード中（回答の判定へ）
     if (state.exercise && state.exercise.step === 1) {
       return handleExerciseMode(event, state);
     }
 
-    // 通常 FREE 対話
+    // 通常の FREE 対話
     return handleFreeText(event, state);
   }
-}
 
+  // その他のイベントは無視
+  return;
+}
 
 // ================================================
 // Part4: FREEモード（くまお先生の思考エンジン）
