@@ -241,79 +241,99 @@ async function handleEvent(event) {
     text: "メッセージを受け取ったよ🐻"
   });
 }
-// ================================================
-// Part4: 授業ノート生成エンジン（くまお先生スタイル）
-// ================================================
+// =====================================================
+// Part4: 授業モード（板書ノート & 深掘り）
+// =====================================================
 
-async function generateLectureNote(topicText) {
-  const prompt = [
-    {
-      role: "system",
-      content: `
-あなたは「くまお先生」。  
-説明はやさしく丁寧、生徒に寄り添いながら黒板に板書するようにまとめます。
+// 生徒が「授業して」などと言ったときに使う（任意）
+async function generateLectureNote(topic, level = "normal") {
+  const prompt = `
+あなたは優しく丁寧に教える「くまお先生」です。
 
-【重要ルール】
-・Markdownの ** や ### や ``` は絶対に使わない
-・記号も ChatGPT っぽいものは禁止
-・絵文字は板書部分では使わない（文章の補足ならOK）
-・読みやすいように空行で区切る
-・タイトルやラベルは日本語でシンプルに
-・板書は簡潔で、必要なら補足説明を後ろに追加する
+【目的】
+生徒がノートに写したくなるような “板書スタイル” の講義ノートを作る。
 
-【構成テンプレ】
-今日のまとめ
-（2行あける）
+【ルール】
+・ChatGPTっぽいMarkdown記号（#, *, **, --- など）禁止
+・絵文字は使わない（ノートはすっきり）
+・短い見出しを入れてまとめる
+・途中式は LINE で読める形式：(a)/(b), √(a), a^2 など
+・専門用語はやさしく補足する
+・最後に「今日のまとめ！」「ここがポイント！」の2セクションを必ず作る
+・必要なら「間違いやすいところ」も入れる
+・口調は黒板に書きながら説明する優しい先生
 
-ここがポイント
-（間違えやすい所や重要点を2〜4個）
-
-用語の整理（必要な場合）
-
-例題（簡単でよい）
-
-補足説明
-（生徒がつまずきやすい所を口頭でフォロー）
-
-最後に生徒へひとこと（優しく促す）
-`
-    },
-    {
-      role: "user",
-      content: `
-以下のテーマについて、くまお先生の板書ノートをまとめてください。
+【出力形式】
+板書ノートのみを書くこと。
+余計な前置きは書かない。
 
 テーマ：
-${topicText}
-`
-    }
-  ];
+${topic}
+  `;
 
-  const result = await openaiChat(prompt, "normal");
-  return result;
+  return await openaiChat(
+    [
+      { role: "system", content: "あなたは優しい黒板先生くまおです。" },
+      { role: "user", content: prompt }
+    ],
+    level
+  );
 }
 
-// FREEモードから授業ノートを呼び出すための関数
-async function handleLectureRequest(ev, state) {
-  const text = ev.message.text.trim();
 
-  // 生徒が「ノートまとめて」と言った場合の処理
-  if (text === "ノートまとめて") {
-    if (!state.lastTopic) {
-      return client.replyMessage(ev.replyToken, {
-        type: "text",
-        text: "まず、どの内容についてノートにまとめたいか教えてね🐻✨"
-      });
-    }
+// 深掘り講義（生徒が「もっと知りたい！」と言ったとき）
+async function generateDeepLecture(topic, lastNote, question, level = "normal") {
+  const prompt = `
+あなたは「くまお先生」です。
 
-    const note = await generateLectureNote(state.lastTopic);
+【目的】
+前回の板書ノートをふまえて、生徒が理解できなかった部分を
+やさしく深掘りして説明する。
 
-    return client.replyMessage(ev.replyToken, {
-      type: "text",
-      text: note
-    });
-  }
+【ルール】
+・黒板で補足説明するように語る
+・数式は LINE形式
+・生徒の疑問を必ず受け止めてから説明する
+・絵文字は少なめ（🐻を適度に）
+・最後に「つづきが聞きたい？🐻」を入れる
 
-  // ノート以外は FREEモードへ返す
-  return null;
+生徒の質問：
+${question}
+
+前回のノート：
+${lastNote}
+  `;
+
+  return await openaiChat(
+    [
+      { role: "system", content: "あなたは対話型の優しい解説者くまお先生です。" },
+      { role: "user", content: prompt }
+    ],
+    level
+  );
+}
+
+
+// 生徒へノートを送る関数
+async function sendLectureNote(replyToken, topic, level = "normal") {
+  const note = await generateLectureNote(topic, level);
+
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text:
+      "📘 ノートに写しておこうね🐻\n\n" +
+      note +
+      "\n\nほかにも知りたいところがあれば、なんでも聞いてね🐻✨"
+  });
+}
+
+
+// 深掘り送信
+async function sendDeepLecture(replyToken, topic, lastNote, question, level = "normal") {
+  const text = await generateDeepLecture(topic, lastNote, question, level);
+
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text
+  });
 }
