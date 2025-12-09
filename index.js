@@ -129,59 +129,66 @@ if (event.type === "message" && event.message.type === "text") {
     return;
   }
 }
-// ================================================================
-// Part3: FREEモードのイベントルーター（最新版・完全動作版）
-// ================================================================
+// =======================================================
+// Part3：FREEモードのイベントルーター（完成版）
+// =======================================================
 
 async function handleEvent(event) {
   const userId = event.source.userId;
 
+  // ------------------------------------
   // 初期化
+  // ------------------------------------
   if (!globalState[userId]) {
     globalState[userId] = {
       mode: "free",
       exercise: null,
       lastTopic: null,
-      lastAnswer: null
+      lastAnswer: null,
+      waitingForAnswerChoice: false
     };
   }
 
   const state = globalState[userId];
 
-  // ----------------------------------------------------
-  // 画像 → 画像解析へ（答えあり／答えなしの振り分けはここ）
-  // ----------------------------------------------------
+  // ------------------------------------
+  // 画像メッセージ → Vision解析へ
+  // ------------------------------------
   if (event.type === "message" && event.message.type === "image") {
     return handleImage(event, state);
   }
 
-  // ----------------------------------------------------
-  // テキスト
-  // ----------------------------------------------------
+  // ------------------------------------
+  // テキストメッセージ
+  // ------------------------------------
   if (event.type === "message" && event.message.type === "text") {
     const text = event.message.text.trim();
 
-    // （追加）画像回答モードへの分岐
-    if (await routeImageIfNeeded(event, state)) {
-      return;
-    }
-
-    // メニュー
+    // メニューに戻る
     if (text === "メニュー") {
       state.mode = "free";
       state.exercise = null;
+      state.lastTopic = null;
+      state.lastAnswer = null;
+      state.waitingForAnswerChoice = false;
       return replyMenu(event.replyToken);
     }
 
-    // 演習モード中（回答の判定へ）
+    // 画像の答え入力待ち（答えあり画像のとき）
+    if (state.waitingForAnswerChoice) {
+      return handleImageAnswerInput(event, state, text);
+    }
+
+    // 演習モード中（後でPart6で使う）
     if (state.exercise && state.exercise.step === 1) {
       return handleExerciseMode(event, state);
     }
 
-    // 通常の FREE 対話
+    // 通常 FREE 対話
     return handleFreeText(event, state);
   }
 }
+
 
 // ================================================
 // Part4: FREEモード（くまお先生の思考エンジン）
