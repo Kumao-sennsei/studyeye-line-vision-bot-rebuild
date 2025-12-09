@@ -1,11 +1,11 @@
 // ================================================
-// Part1: StudyEye くまお先生ボット - 基礎コア（CJS版）
+// StudyEye くまお先生ボット - 完全フルコード（index.js）
+// ES Modules / Railway / LINE Messaging API / OpenAI
 // ================================================
 
-// ---- 必ず require を使う！ ----
-const express = require("express");
-const line = require("@line/bot-sdk");
-const fetch = require("node-fetch");
+import express from "express";
+import line from "@line/bot-sdk";
+import fetch from "node-fetch";
 
 // -----------------------------------------------
 // LINE Bot 設定
@@ -15,294 +15,471 @@ const config = {
   channelSecret: process.env.CHANNEL_SECRET,
 };
 
-const app = express();
-app.use(express.json());
-
-// -----------------------------------------------
-// ユーザーごとの状態管理（state）
-// -----------------------------------------------
-const globalState = {}; 
-// 格納例：
-// globalState[userId] = {
-//   mode: "free",
-//   exercise: null,
-//   lastTopic: null,
-//   lastAnswer: null,
-// };
-
-// -----------------------------------------------
-// 返信ユーティリティ
-// -----------------------------------------------
-async function replyText(token, text) {
-  return client.replyMessage(token, {
-    type: "text",
-    text,
-  });
+if (!config.channelAccessToken || !config.channelSecret) {
+  console.warn("⚠️ CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET が設定されていません");
 }
 
 const client = new line.Client(config);
 
 // -----------------------------------------------
-// ChatGPT API 呼び出し（基礎版）
-// ※ 後で Part2 でくまお先生版に強化する
+// Express 初期化
 // -----------------------------------------------
-async function askGPT(prompt) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content || "すみません、返答できませんでした。";
-}
-
-// ================================================
-// Part1 はここまで！
-// ================================================
-
-export { globalState, replyText, askGPT, client };
-
-// ================================================
-// Part2: イベント受信ルーター（基礎版）
-// ================================================
-
-// LINE Webhook エンドポイント
-app.post("/webhook", async (req, res) => {
-  try {
-    const events = req.body.events;
-
-    // 応答しないとLINE側がタイムアウト扱いになるので先に返す
-    res.status(200).send("OK");
-
-    // 各イベントを処理
-    for (const event of events) {
-      await handleEvent(event);
-    }
-
-  } catch (err) {
-    console.error("Webhook Error:", err);
-    res.status(500).end();
-  }
-});
+const app = express();
+app.use(express.json());
 
 // -----------------------------------------------
-// イベント処理本体（基礎モード）
+// グローバル state（ユーザー別）
 // -----------------------------------------------
-async function handleEvent(event) {
-  // ユーザーID
-  const userId = event.source.userId;
+/*
+  globalState[userId] = {
+    mode: "free",           // "free" | 将来: "exercise" など
+    exercise: null,         // 今回は未実装（将来拡張用）
+    lastTopic: null,
+    lastAnswer: null,
+    waitingAnswer: null,    // { kind: "image", status: "waiting_student_answer", imageBase64: "..." }
+  };
+*/
+const globalState = {};
 
-  // state 初期化
+function getUserState(userId) {
   if (!globalState[userId]) {
     globalState[userId] = {
       mode: "free",
       exercise: null,
       lastTopic: null,
       lastAnswer: null,
+      waitingAnswer: null,
     };
   }
-
-  const state = globalState[userId];
-
-  // -------------------------------------------
-  // 画像メッセージは「今はまだ未対応 → 返答」
-  // 後で Part3 で Vision を追加する！
-  // -------------------------------------------
-  if (event.type === "message" && event.message.type === "image") {
-    return replyText(event.replyToken, "🐻💡 画像を受け取ったよ！この機能は今準備中なんだ。もう少し待っててね！");
-  }
-
-  // -------------------------------------------
-  // テキストメッセージ
-  // -------------------------------------------
-  if (event.type === "message" && event.message.type === "text") {
-    const text = event.message.text.trim();
-
-    // メニュー呼び出し
-    if (text === "メニュー") {
-      state.mode = "free";
-      state.exercise = null;
-      return replyText(event.replyToken, "🐻📖 メニューだよ！今は「フリーモード」で話せるよ〜");
-    }
-
-    // Freeモードの通常会話
-    return await handleFreeMode(event, state);
-  }
+  return globalState[userId];
 }
 
 // -----------------------------------------------
-// Freeモードの会話処理
+// 数式・テキスト整形（sanitizeMath）
+// 仕様書の「板書スタイル」「Markdown禁止」に対応
 // -----------------------------------------------
-async function handleFreeMode(event, state) {
+function sanitizeMath(text) {
+  if (!text) return "";
+
+  let t = text;
+
+  // ChatGPT 的な Markdown 記号を削除
+  t = t.replace(/[#$*_`>]/g, "");
+
+  // 連続空行を詰める
+  t = t.replace(/\n{3,}/g, "\n\n");
+
+  // × ÷ を分かりやすく
+  t = t.replace(/×/g, " x ");
+  t = t.replace(/÷/g, " / ");
+
+  // 全角スペースなどを軽く整形
+  t = t.replace(/\u3000/g, " ");
+
+  return t.trim();
+}
+
+// -----------------------------------------------
+// OpenAI 共通設定（モデル切り替えロジックの土台）
+// -----------------------------------------------
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+if (!OPENAI_API_KEY) {
+  console.warn("⚠️ OPENAI_API_KEY が設定されていません");
+}
+
+// テキストモデル（通常／軽量）
+const TEXT_MODEL_MAIN =
+  process.env.OPENAI_TEXT_MODEL_MAIN || "gpt-4o";
+const TEXT_MODEL_LIGHT =
+  process.env.OPENAI_TEXT_MODEL_LIGHT || "gpt-4o-mini";
+
+// Vision 用モデル（画像解析） ※仕様上 4.1 を推奨
+const VISION_MODEL =
+  process.env.OPENAI_VISION_MODEL || "gpt-4.1";
+
+// 軽い問い合わせかどうかでモデルを分ける（超シンプル判定）
+function chooseTextModel(userMessage) {
+  if (!userMessage) return TEXT_MODEL_MAIN;
+  if (userMessage.length <= 40) {
+    return TEXT_MODEL_LIGHT; // 短い → 軽量モデル
+  }
+  return TEXT_MODEL_MAIN; // それ以外 → 通常
+}
+
+// -----------------------------------------------
+// OpenAI: Chat テキスト呼び出し
+// -----------------------------------------------
+async function callOpenAIChat({ model, messages }) {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("OpenAI Chat API error:", response.status, errorText);
+    throw new Error("OpenAI Chat API error");
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  return sanitizeMath(content);
+}
+
+// -----------------------------------------------
+// OpenAI: Vision 呼び出し
+// -----------------------------------------------
+async function callOpenAIVision({ imageBase64, instructions }) {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: VISION_MODEL,
+      messages: [
+        {
+          role: "system",
+          content:
+            "あなたは数学・物理・化学の問題を黒板で解説する優しい先生くまおです。板書スタイルで、読みやすく丁寧に日本語で説明します。Markdown記号(#, *, ** など)は一切使わないこと。「計算機を使います」とは書かないこと。",
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: instructions,
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${imageBase64}`,
+              },
+            },
+          ],
+        },
+      ],
+      temperature: 0.3,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("OpenAI Vision API error:", response.status, errorText);
+    throw new Error("OpenAI Vision API error");
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  return sanitizeMath(content);
+}
+
+// -----------------------------------------------
+// LINE 返信ユーティリティ
+// -----------------------------------------------
+async function replyText(replyToken, text) {
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text,
+  });
+}
+
+// -----------------------------------------------
+// 画像コンテンツ取得 → base64 変換
+// -----------------------------------------------
+async function getImageBase64(messageId) {
+  const stream = await client.getMessageContent(messageId);
+
+  const chunks = [];
+  return await new Promise((resolve, reject) => {
+    stream.on("data", (chunk) => chunks.push(chunk));
+    stream.on("end", () => {
+      const buffer = Buffer.concat(chunks);
+      const base64 = buffer.toString("base64");
+      resolve(base64);
+    });
+    stream.on("error", (err) => {
+      console.error("getMessageContent error:", err);
+      reject(err);
+    });
+  });
+}
+
+// =====================================================
+// FREEモード（通常授業・質問）
+// =====================================================
+async function handleFreeText(event, state) {
   const userMessage = event.message.text.trim();
+  const model = chooseTextModel(userMessage);
 
-  const prompt = `
-あなたは「くまお先生」です。かわいく優しく、高校生に教えるように返答します。
-語尾に「🐻」を自然に混ぜてもOK。
+  const systemPrompt =
+    "あなたは『くまお先生』です。優しく、寄り添いながら、高校生にも分かるように解説します。" +
+    "ChatGPT風のMarkdown記号(#, *, **, ``` など)は使わず、板書のように1行ずつ丁寧に書きます。" +
+    "数式は x^2, 3/4, √3 のようにLINEで読みやすい形で書いてください。" +
+    "専門用語だけに頼らず、やさしい言葉で補足も入れてください。" +
+    "「計算機を使います」という表現は使わないでください。";
 
-ユーザー: ${userMessage}
-  `;
+  const userPrompt = [
+    "【生徒の質問】",
+    userMessage,
+    "",
+    "【出力ルール】",
+    "・最初に「じゃあ、ここから一緒に見ていこうか🐻」のように一声かける",
+    "・そのあと、板書風に1行ずつ説明する",
+    "・必要なら途中で「ここは大事だよ」など一言コメントを入れる",
+    "・最後に軽く背中を押す一言を入れる（例：『この問題、もう一度自分で解いてみると力になるよ🐻』）",
+  ].join("\n");
 
-  const reply = await askGPT(prompt);
+  const answer = await callOpenAIChat({
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+  });
 
-  return replyText(event.replyToken, reply);
+  state.lastTopic = userMessage;
+  state.lastAnswer = answer;
+
+  return replyText(event.replyToken, answer);
 }
 
-// =========================================================
-// Part3: FREEモードのイベントルーター（完全正常版）
-// =========================================================
+// =====================================================
+// 画像モード（答えあり・なし両対応）
+// =====================================================
 
-async function handleEvent(event) {
-  const userId = event.source.userId;
+// ① 画像が送られたとき：まず答えを持っているかを聞く
+async function handleImageFirst(event, state) {
+  try {
+    // LINE 側の画像保存期間があるので、このタイミングで取得＆保存しておく
+    const imageBase64 = await getImageBase64(event.message.id);
 
-  // ユーザーステート初期化
-  if (!globalState[userId]) {
-    globalState[userId] = {
-      mode: "free",
-      exercise: null,
-      lastTopic: null,
-      lastAnswer: null
+    state.waitingAnswer = {
+      kind: "image",
+      status: "waiting_student_answer",
+      imageBase64,
     };
+
+    const text =
+      "この問題、もし自分の答えがあったら送ってくれる？\n" +
+      "一緒に答え合わせする方が精度が上がるよ🐻✨\n\n" +
+      "・自分の答えを送る → 採点＆解説\n" +
+      "・答えがなければ「そのまま解説して」と送ってくれたらOKだよ🐻";
+
+    return replyText(event.replyToken, text);
+  } catch (err) {
+    console.error("handleImageFirst error:", err);
+    return replyText(
+      event.replyToken,
+      "ちょっと調子が乱れちゃったみたい💦 もう一度画像を送ってくれる？"
+    );
   }
+}
 
-  const state = globalState[userId];
-
-  // ----------------------------------------------------
-  // 画像 → 画像解析へ
-  // ----------------------------------------------------
-  if (event.type === "message" && event.message.type === "image") {
-    return handleImage(event, state);
-  }
-
-  // ----------------------------------------------------
-  // テキスト
-  // ----------------------------------------------------
-  if (event.type === "message" && event.message.type === "text") {
-    const text = event.message.text.trim();
-
-    // Part3：答え付き画像ルーター（テキストで答えが届いたとき判定する用）
-    if (await routeImageIfNeeded(event, state)) {
-      return;
+// ② 生徒の答えが来たとき（答えあり） → 採点＆解説
+async function handleImageWithStudentAnswer(event, state, studentAnswer) {
+  try {
+    if (
+      !state.waitingAnswer ||
+      state.waitingAnswer.kind !== "image" ||
+      !state.waitingAnswer.imageBase64
+    ) {
+      // 念のためフォールバック：通常FREEモードに回す
+      state.waitingAnswer = null;
+      return handleFreeText(event, state);
     }
+
+    const imageBase64 = state.waitingAnswer.imageBase64;
+
+    const instructions =
+      "これから数学・物理・化学などの問題が写った画像を送ります。\n\n" +
+      "【してほしいこと】\n" +
+      "1. まず画像の問題文を、日本語で読みやすく書き起こす。\n" +
+      "2. その問題を、板書のように1行ずつ丁寧に解説する。\n" +
+      "3. 最後に「答え：○○」の形式で答えを1行でまとめる。\n" +
+      "4. そのあとで、生徒の答えが合っているか採点し、\n" +
+      "   「正解」「惜しい」「不正解」のいずれかを伝える。\n" +
+      "5. 間違っていた場合、どこでずれたかを簡潔に説明する。\n\n" +
+      `【生徒の答え】\n${studentAnswer}\n\n` +
+      "【禁止】\n" +
+      "・Markdownの記号(#, *, **, ``` など)を使わない\n" +
+      "・「計算機を使います」という表現を使わない\n";
+
+    const resultText = await callOpenAIVision({
+      imageBase64,
+      instructions,
+    });
+
+    state.waitingAnswer = null;
+
+    return replyText(event.replyToken, resultText);
+  } catch (err) {
+    console.error("handleImageWithStudentAnswer error:", err);
+    state.waitingAnswer = null;
+    return replyText(
+      event.replyToken,
+      "画像の解析中にちょっとエラーが出ちゃったみたい💦 もう一度送ってくれる？"
+    );
+  }
+}
+
+// ③ 生徒が「そのまま解説して」など → 答えなしで解説
+async function handleImageExplainOnly(event, state) {
+  try {
+    let imageBase64 = state.waitingAnswer?.imageBase64;
+
+    // 念のため、state に画像がなければこのテキストに対応する画像はないとみなす
+    if (!imageBase64) {
+      return replyText(
+        event.replyToken,
+        "さっきの画像が見当たらないみたい💦 もう一度画像を送ってくれる？"
+      );
+    }
+
+    const instructions =
+      "これから数学・物理・化学などの問題が写った画像を送ります。\n\n" +
+      "【してほしいこと】\n" +
+      "1. まず画像の問題文を、きれいに書き起こす。\n" +
+      "2. その問題を、板書のように1行ずつ丁寧に解説する。\n" +
+      "3. 最後に「答え：○○」の形式で答えを1行でまとめる。\n" +
+      "4. 生徒の答えはないので、採点はせず、解説と答えだけを出す。\n\n" +
+      "【禁止】\n" +
+      "・Markdownの記号(#, *, **, ``` など)を使わない\n" +
+      "・「計算機を使います」という表現を使わない\n";
+
+    const resultText = await callOpenAIVision({
+      imageBase64,
+      instructions,
+    });
+
+    state.waitingAnswer = null;
+
+    return replyText(event.replyToken, resultText);
+  } catch (err) {
+    console.error("handleImageExplainOnly error:", err);
+    state.waitingAnswer = null;
+    return replyText(
+      event.replyToken,
+      "画像の解説中にエラーが出ちゃったみたい💦 もう一度画像を送ってくれる？"
+    );
+  }
+}
+
+// =====================================================
+// メニュー表示（シンプル版）
+// =====================================================
+async function replyMenu(replyToken) {
+  const text =
+    "🐻📘 くまお先生メニュー\n\n" +
+    "・普通に質問 ⇒ そのまま聞いてね\n" +
+    "・問題の写真 ⇒ カメラで送ってね（答えあり／なし両方OK）\n\n" +
+    "「演習したい」などの機能は、これからどんどん増やしていく予定だよ🔥";
+
+  return replyText(replyToken, text);
+}
+
+// =====================================================
+// イベント処理本体
+// =====================================================
+async function handleEvent(event) {
+  if (event.type !== "message") {
+    // それ以外のイベントはとりあえず無視
+    return;
+  }
+
+  const userId = event.source.userId;
+  const state = getUserState(userId);
+
+  // 画像メッセージ
+  if (event.message.type === "image") {
+    // 新しい画像が来たら、前の待ち状態はリセット
+    state.waitingAnswer = null;
+    return handleImageFirst(event, state);
+  }
+
+  // テキストメッセージ
+  if (event.message.type === "text") {
+    const text = event.message.text.trim();
 
     // メニュー
     if (text === "メニュー") {
       state.mode = "free";
       state.exercise = null;
+      state.waitingAnswer = null;
       return replyMenu(event.replyToken);
     }
 
-    // 演習モード中（回答の判定へ）
-    if (state.exercise && state.exercise.step === 1) {
-      return handleExerciseMode(event, state);
+    // 画像の答え or 解説指示の可能性
+    if (
+      state.waitingAnswer &&
+      state.waitingAnswer.kind === "image" &&
+      state.waitingAnswer.status === "waiting_student_answer"
+    ) {
+      // 「解説」「そのまま」などが含まれていれば → 答えなしで解説
+      if (
+        text.includes("解説") ||
+        text.includes("そのまま") ||
+        text.includes("説明して")
+      ) {
+        return handleImageExplainOnly(event, state);
+      }
+
+      // それ以外は「生徒の答え」とみなして採点
+      return handleImageWithStudentAnswer(event, state, text);
     }
 
-    // 通常の FREE 対話
+    // 将来：演習モードなどをここに追加できる
+
+    // 通常 FREE モード
     return handleFreeText(event, state);
   }
-}
 
+  // それ以外の message.type は今は無視
+}
 
 // =====================================================
-// Part4: 授業モード（板書ノート & 深掘り）
+// LINE Webhook エンドポイント
 // =====================================================
+app.post(
+  "/webhook",
+  line.middleware(config),
+  async (req, res) => {
+    try {
+      const events = req.body.events || [];
 
-// 生徒が「授業して」などと言ったときに使う（任意）
-async function generateLectureNote(topic, level = "normal") {
-  const prompt = `
-あなたは優しく丁寧に教える「くまお先生」です。
+      // LINE 側にすぐ 200 を返す
+      res.status(200).end();
 
-【目的】
-生徒がノートに写したくなるような “板書スタイル” の講義ノートを作る。
+      // 各イベントを非同期で処理
+      await Promise.all(events.map((event) => handleEvent(event)));
+    } catch (err) {
+      console.error("Webhook error:", err);
+      // ここで res は既に返しているので、何もしない
+    }
+  }
+);
 
-【ルール】
-・ChatGPTっぽいMarkdown記号（#, *, **, --- など）禁止
-・絵文字は使わない（ノートはすっきり）
-・短い見出しを入れてまとめる
-・途中式は LINE で読める形式：(a)/(b), √(a), a^2 など
-・専門用語はやさしく補足する
-・最後に「今日のまとめ！」「ここがポイント！」の2セクションを必ず作る
-・必要なら「間違いやすいところ」も入れる
-・口調は黒板に書きながら説明する優しい先生
+// ヘルスチェック用
+app.get("/", (req, res) => {
+  res.send("StudyEye くまお先生ボット running 🐻");
+});
 
-【出力形式】
-板書ノートのみを書くこと。
-余計な前置きは書かない。
+// -----------------------------------------------
+// Railway / ローカル起動
+// -----------------------------------------------
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`🚀 Server is running on port ${port}`);
+});
 
-テーマ：
-${topic}
-  `;
-
-  return await openaiChat(
-    [
-      { role: "system", content: "あなたは優しい黒板先生くまおです。" },
-      { role: "user", content: prompt }
-    ],
-    level
-  );
-}
-
-
-// 深掘り講義（生徒が「もっと知りたい！」と言ったとき）
-async function generateDeepLecture(topic, lastNote, question, level = "normal") {
-  const prompt = `
-あなたは「くまお先生」です。
-
-【目的】
-前回の板書ノートをふまえて、生徒が理解できなかった部分を
-やさしく深掘りして説明する。
-
-【ルール】
-・黒板で補足説明するように語る
-・数式は LINE形式
-・生徒の疑問を必ず受け止めてから説明する
-・絵文字は少なめ（🐻を適度に）
-・最後に「つづきが聞きたい？🐻」を入れる
-
-生徒の質問：
-${question}
-
-前回のノート：
-${lastNote}
-  `;
-
-  return await openaiChat(
-    [
-      { role: "system", content: "あなたは対話型の優しい解説者くまお先生です。" },
-      { role: "user", content: prompt }
-    ],
-    level
-  );
-}
-
-
-// 生徒へノートを送る関数
-async function sendLectureNote(replyToken, topic, level = "normal") {
-  const note = await generateLectureNote(topic, level);
-
-  return client.replyMessage(replyToken, {
-    type: "text",
-    text:
-      "📘 ノートに写しておこうね🐻\n\n" +
-      note +
-      "\n\nほかにも知りたいところがあれば、なんでも聞いてね🐻✨"
-  });
-}
-
-
-// 深掘り送信
-async function sendDeepLecture(replyToken, topic, lastNote, question, level = "normal") {
-  const text = await generateDeepLecture(topic, lastNote, question, level);
-
-  return client.replyMessage(replyToken, {
-    type: "text",
-    text
-  });
-}
+export default app;
