@@ -1,5 +1,6 @@
 import express from "express";
 import crypto from "crypto";
+import fetch from "node-fetch";
 import { Client } from "@line/bot-sdk";
 
 const app = express();
@@ -15,7 +16,7 @@ const client = new Client({
 });
 
 // ==============================
-// Webhook (署名検証付き)
+// Webhook（最重要）
 // ==============================
 app.post(
   "/webhook",
@@ -27,45 +28,57 @@ app.post(
         .digest("base64");
 
       if (signature !== req.headers["x-line-signature"]) {
-        console.error("❌ 署名エラー");
         throw new Error("Invalid signature");
       }
     },
   }),
-  async (req, res) => {
-    try {
-      const events = req.body.events;
+  (req, res) => {
+    // ✅ 何があっても即200返す
+    res.status(200).end();
 
-      for (const event of events) {
-        await handleEvent(event);
-      }
-
-      res.status(200).send("OK");
-    } catch (e) {
-      console.error("## ERROR ##", e);
-      res.status(200).send("OK"); // ← 絶対に200を返す（502対策）
-    }
+    // ✅ あとで処理（非同期）
+    req.body.events.forEach(handleEvent);
   }
 );
 
 // ==============================
-// イベント処理（エコーするだけ）
+// メイン処理
 // ==============================
 async function handleEvent(event) {
   if (event.type !== "message") return;
 
+  // ------------------------------
+  // テキスト
+  // ------------------------------
   if (event.message.type === "text") {
-    const text = event.message.text;
-
-    // そのまま返す
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text: `Echo: ${text}`,
+      text:
+        "こんにちは🐻✨\n\n" +
+        "今日は何をする？\n\n" +
+        "① 質問がしたい\n" +
+        "② 講義を受けたい\n" +
+        "③ 演習がしたい\n" +
+        "④ 雑談したい\n\n" +
+        "画像の問題も送ってOKだよ📸",
+    });
+  }
+
+  // ------------------------------
+  // 画像（今はテスト返信だけ）
+  // ------------------------------
+  if (event.message.type === "image") {
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "画像ありがとう🐻✨\n" +
+        "今からこの問題をやさしく解説するね！\n\n" +
+        "（※ 次のステップでAI解説をつなぐよ）",
     });
   }
 }
 
 // ==============================
 app.listen(3000, () => {
-  console.log("🔥 安定版くまお先生 起動中（Echoモード）");
+  console.log("✅ くまお先生 起動中 🐻✨");
 });
