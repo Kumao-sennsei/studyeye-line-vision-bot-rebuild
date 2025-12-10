@@ -17,6 +17,14 @@ const client = new Client({
 });
 
 // ==============================
+// 会話状態（超重要）
+// ==============================
+global.userState = {
+  mode: "menu", // menu / question / lecture / practice / chat
+  lastImageBase64: null,
+};
+
+// ==============================
 // Webhook 検証
 // ==============================
 app.post(
@@ -42,104 +50,116 @@ app.post(
     }
   }
 );
-async function handleTextMessage(event, state) {
+
+// ==============================
+// メイン処理
+// ==============================
+async function handleEvent(event) {
+  if (event.type !== "message") return;
+
+  // ------------------------------
+  // 画像メッセージ（保存のみ）
+  // ------------------------------
+  if (event.message.type === "image") {
+    const imageBase64 = await getImageBase64(event.message.id);
+    global.userState.lastImageBase64 = imageBase64;
+
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "画像を受け取ったよ🐻✨\n" +
+        "このまま解説するなら「そのまま解説して」って言ってね😊",
+    });
+    return;
+  }
+
+  // ------------------------------
+  // テキストメッセージ
+  // ------------------------------
+  if (event.message.type !== "text") return;
   const text = event.message.text.trim();
 
-  // --- 強制トリガー：解説開始 ---
-  if (
-    text.includes("そのまま解説") ||
-    text.includes("解説して") ||
-    text.includes("説明して")
-  ) {
-    if (!state.lastImageBase64) {
-      return replyText(event.replyToken,
-        "画像がまだ届いていないみたいだよ🐻💦\n問題の写真を送ってね。"
-      );
+  // ===== 解説トリガー =====
+  if (text.includes("そのまま解説")) {
+    if (!global.userState.lastImageBase64) {
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "問題の画像を先に送ってね🐻💦",
+      });
+      return;
     }
 
-    state.mode = "explaining";
+    const prompt = `
+あなたは「くまお先生」。
+生徒はすでに「そのまま解説して」と言っています。
 
-    const instructions = `
-あなたは、やさしくて明るい「くまお先生🐻✨」です。
-生徒は「そのまま解説して」と言っています。
-
-【必ず守ること】
-・画像の問題を読み取って解説を開始する
 ・途中で質問を挟まない
-・式 → 考え方 → 計算 → 答え の順で説明
-・中学生〜高校生にわかる言葉で
-・最後に「ノートまとめ」を出す
+・最初から最後まで順番に説明
+・やさしく、明るく、板書のように整理
+・数学・理科は【解き方】を 1⃣2⃣3⃣… で書く
+・最後にノートまとめを出す
 
-【ノート構成】
+ノート構成：
 【今日のまとめ】
-・ポイントを箇条書き
-
 【ポイント】
-・考え方・公式
-
 【解き方】
-1⃣〜順番に
 
 語尾：
 「このページ、ノートに写しておくと復習しやすいよ🐻✨」
 `;
 
-    const result = await callVision(state.lastImageBase64, instructions);
-    return replyText(event.replyToken, result);
-  }
-
-  // --- 通常フロー ---
-  if (text.includes("数学")) {
-    state.mode = "waiting_problem";
-    return replyText(event.replyToken,
-      "いいね😊\n問題文か写真を送ってね🐻✨"
+    const result = await callVision(
+      global.userState.lastImageBase64,
+      prompt
     );
-  }
 
-  return replyText(event.replyToken,
-    "どんなことをしたいか教えてね🐻✨\n\n📘 質問\n📗 講義を受けたい\n✏️ 演習したい\n💬 雑談したい"
-  );
-}
-
-
-  // ------------------------------
-  // テキストメッセージ
-  // ------------------------------
-  if (event.message.type === "text") {
-    const text = event.message.text.trim();
-
-    // ★ 解説トリガー
-    if (
-      text.includes("そのまま解説") ||
-      text.includes("解説して") ||
-      text.includes("教えて") ||
-      text.includes("説明して")
-    ) {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "了解だよ🐻✨ 問題の画像を送ってね！",
-      });
-      return;
-    }
-
-    // ★ 最初の導線
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text:
-        "こんにちは😊🐻\n\n" +
-        "今日は何をする？\n" +
-        "👇 えらんでね！\n\n" +
-        "① 質問がしたい ✏️\n" +
-        "② 講義を受けたい 📘\n" +
-        "③ 演習したい 📝\n" +
-        "④ 雑談したい ☕\n\n" +
-        "画像の問題も、そのまま送ってOKだよ✨",
+      text: result,
     });
+
+    // 状態リセット
+    global.userState.mode = "menu";
+    global.userState.lastImageBase64 = null;
+    return;
   }
+
+  // ===== モード選択 =====
+  if (text.includes("質問")) {
+    global.userState.mode = "question";
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "OKだよ🐻✨ 質問だね！問題文や写真を送ってね😊",
+    });
+    return;
+  }
+
+  if (text.includes("講義")) {
+    global.userState.mode = "lecture";
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "講義だね📘 どの単元を聞きたいか教えてね🐻✨",
+    });
+    return;
+  }
+
+  // ===== 初期メニュー =====
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text:
+      "こんにちは😊🐻\n\n" +
+      "今日は何をする？\n" +
+      "👇 えらんでね！\n\n" +
+      "① 質問がしたい ✏️\n" +
+      "② 講義を受けたい 📘\n" +
+      "③ 演習したい 📝\n" +
+      "④ 雑談したい ☕\n\n" +
+      "問題の写真はそのまま送ってOKだよ✨",
+  });
 }
 
 // ==============================
-// Vision API 呼び出し
+// Vision API
 // ==============================
 async function callVision(imageBase64, instructions) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -154,7 +174,7 @@ async function callVision(imageBase64, instructions) {
         {
           role: "system",
           content:
-            "あなたは、やさしく明るく、生徒に寄り添う先生です。難しい言葉は使わず、順番に説明します。",
+            "あなたは、やさしく明るく、生徒に寄り添う先生です。",
         },
         {
           role: "user",
