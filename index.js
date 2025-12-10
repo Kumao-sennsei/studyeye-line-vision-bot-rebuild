@@ -5,9 +5,9 @@ import { Client } from "@line/bot-sdk";
 
 const app = express();
 
-/* ==============================
-  環境変数
-============================== */
+// ==============================
+// 環境変数
+// ==============================
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -16,9 +16,9 @@ const client = new Client({
   channelAccessToken: CHANNEL_ACCESS_TOKEN,
 });
 
-/* ==============================
-  Webhook（最重要）
-============================== */
+// ==============================
+// Webhook
+// ==============================
 app.post(
   "/webhook",
   express.json({
@@ -27,119 +27,117 @@ app.post(
         .createHmac("SHA256", CHANNEL_SECRET)
         .update(buf)
         .digest("base64");
-
       if (signature !== req.headers["x-line-signature"]) {
         throw new Error("Invalid signature");
       }
     },
   }),
-  async (req, res) => {
-    // ✅ まず即200（タイムアウト防止）
+  (req, res) => {
+    // ★ 最重要：即200返す
     res.status(200).end();
 
-    try {
-      await Promise.all(req.body.events.map(handleEvent));
-    } catch (e) {
-      console.error("handleEvent error:", e);
-    }
+    // 非同期で処理
+    req.body.events.forEach(handleEvent);
   }
 );
 
-/* ==============================
-  メイン処理
-============================== */
+// ==============================
+// メイン処理
+// ==============================
 async function handleEvent(event) {
   if (event.type !== "message") return;
 
-  /* ===== 画像が来たら即解説 ===== */
+  // ------------------------------
+  // 画像 → 即解説（状態確認しない）
+  // ------------------------------
   if (event.message.type === "image") {
-    const imageBase64 = await getImageBase64(event.message.id);
+    try {
+      const imageBase64 = await getImageBase64(event.message.id);
 
-    const prompt = `
+      const prompt = `
 あなたは「くまお先生」。
-生徒は「そのまま解説して」と言っています。
+生徒は問題画像を送っています。
 
-・途中で質問はしない
-・最初から最後まで丁寧に説明
-・数式は省略しすぎない
+・途中で質問しない
+・最初から最後まで解説
+・やさしく、順番に
 ・板書みたいに整理
 
+ノート構成：
 【今日のまとめ】
 【ポイント】
-【解き方】（1⃣→2⃣→3⃣）
+【解き方】（1⃣2⃣3⃣）
 
 語尾：
 「このページ、ノートに写しておくと復習しやすいよ🐻✨」
 `;
 
-    const result = await callVision(imageBase64, prompt);
+      const result = await callVision(imageBase64, prompt);
 
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text: result,
-    });
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: result,
+      });
+    } catch (e) {
+      console.error(e);
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "ごめんね💦 もう一度画像を送ってもらえるかな？🐻",
+      });
+    }
     return;
   }
 
-  /* ===== テキスト処理 ===== */
+  // ------------------------------
+  // テキスト → 必ずボタン
+  // ------------------------------
   if (event.message.type === "text") {
-    const text = event.message.text.trim();
-
-    // --- ボタン分岐 ---
-    if (text === "質問") {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "いいね😊 質問したい問題を送ってね！画像でもOKだよ🐻✨",
-      });
-      return;
-    }
-
-    if (text === "講義") {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "了解📘 どの教科・単元を講義する？",
-      });
-      return;
-    }
-
-    if (text === "演習") {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "よっしゃ📝 演習したい内容を教えて！",
-      });
-      return;
-    }
-
-    if (text === "雑談") {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "雑談しよ☕ 最近どう？🐻",
-      });
-      return;
-    }
-
-    // --- 初期メニュー ---
     await client.replyMessage(event.replyToken, {
-      type: "template",
-      altText: "メニュー",
-      template: {
-        type: "buttons",
-        title: "こんにちは🐻✨",
-        text: "今日は何をする？",
-        actions: [
-          { type: "message", label: "① 質問がしたい", text: "質問" },
-          { type: "message", label: "② 講義を受けたい", text: "講義" },
-          { type: "message", label: "③ 演習がしたい", text: "演習" },
-          { type: "message", label: "④ 雑談したい", text: "雑談" },
+      type: "text",
+      text: "こんにちは😊🐻\n今日は何をする？",
+      quickReply: {
+        items: [
+          {
+            type: "action",
+            action: {
+              type: "message",
+              label: "① 質問がしたい ✏️",
+              text: "質問がしたい",
+            },
+          },
+          {
+            type: "action",
+            action: {
+              type: "message",
+              label: "② 講義を受けたい 📘",
+              text: "講義を受けたい",
+            },
+          },
+          {
+            type: "action",
+            action: {
+              type: "message",
+              label: "③ 演習がしたい 📝",
+              text: "演習がしたい",
+            },
+          },
+          {
+            type: "action",
+            action: {
+              type: "message",
+              label: "④ 雑談したい ☕",
+              text: "雑談したい",
+            },
+          },
         ],
       },
     });
   }
 }
 
-/* ==============================
-  Vision API
-============================== */
+// ==============================
+// OpenAI Vision
+// ==============================
 async function callVision(imageBase64, instructions) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -153,7 +151,7 @@ async function callVision(imageBase64, instructions) {
         {
           role: "system",
           content:
-            "あなたは優しく丁寧な先生です。中学生にもわかる説明をします。",
+            "あなたはやさしく明るい先生です。中学生にもわかる説明をします。",
         },
         {
           role: "user",
@@ -175,9 +173,9 @@ async function callVision(imageBase64, instructions) {
   return data.choices[0].message.content;
 }
 
-/* ==============================
-  LINE画像取得
-============================== */
+// ==============================
+// LINE画像取得
+// ==============================
 async function getImageBase64(messageId) {
   const res = await fetch(
     `https://api-data.line.me/v2/bot/message/${messageId}/content`,
@@ -192,9 +190,7 @@ async function getImageBase64(messageId) {
   return Buffer.from(buffer).toString("base64");
 }
 
-/* ==============================
-  起動
-============================== */
+// ==============================
 app.listen(3000, () => {
   console.log("くまお先生 起動中 🐻✨");
 });
