@@ -287,6 +287,8 @@ async function handleEvent(event) {
 
   // 画像
   if (event.message.type === "image") {
+     state.hasQuestion = true;   // ★これを追加
+
     state.waitingAnswer = null;
     return handleImageFirst(event, state);
   }
