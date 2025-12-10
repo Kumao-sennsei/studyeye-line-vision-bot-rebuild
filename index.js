@@ -1,164 +1,25 @@
 import express from "express";
-import fetch from "node-fetch";
-import crypto from "crypto";
-import { Client } from "@line/bot-sdk";
 
 const app = express();
 
-// ==============================
-// 環境変数
-// ==============================
-const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
-const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// JSON を受け取れるようにする（特に何もしない）
+app.use(express.json());
 
-const client = new Client({
-  channelAccessToken: CHANNEL_ACCESS_TOKEN,
+// ------------- Webhook本体 -------------
+// ★ポイント：とにかく 200 OK を返すだけ★
+app.post("/webhook", (req, res) => {
+  console.log("Webhook received:", JSON.stringify(req.body, null, 2));
+  res.status(200).send("OK");
 });
 
-// ==============================
-// Webhook
-// ==============================
-app.post(
-  "/webhook",
-  express.json({
-    verify: (req, res, buf) => {
-      const signature = crypto
-        .createHmac("SHA256", CHANNEL_SECRET)
-        .update(buf)
-        .digest("base64");
-      if (signature !== req.headers["x-line-signature"]) {
-        throw new Error("Invalid signature");
-      }
-    },
-  }),
-  (req, res) => {
-    // ✅ 最重要：即200返す
-    res.status(200).end();
-
-    // ✅ あとは裏で処理
-    Promise.all(req.body.events.map(handleEvent)).catch(console.error);
-  }
-);
-
-// ==============================
-// メイン処理
-// ==============================
-async function handleEvent(event) {
-  if (event.type !== "message") return;
-
-  // ------------------------------
-  // 画像 → 即解説
-  // ------------------------------
-  if (event.message.type === "image") {
-    const imageBase64 = await getImageBase64(event.message.id);
-
-    const prompt = `
-あなたは「くまお先生」。
-生徒は「そのまま解説して」と言っています。
-
-・途中で質問しない
-・最初から最後まで解説
-・順番に、やさしく
-・板書のように整理
-
-ノート構成：
-【今日のまとめ】
-【ポイント】
-【解き方】（あれば 1⃣2⃣3⃣）
-
-語尾：
-「このページ、ノートに写しておくと復習しやすいよ🐻✨」
-`;
-
-    const result = await callVision(imageBase64, prompt);
-
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text: result,
-    });
-    return;
-  }
-
-  // ------------------------------
-  // テキスト
-  // ------------------------------
-  if (event.message.type === "text") {
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "こんにちは😊🐻\n\n" +
-        "今日は何をする？\n\n" +
-        "① 質問がしたい ✏️\n" +
-        "② 講義を受けたい 📘\n" +
-        "③ 演習がしたい 📝\n" +
-        "④ 雑談したい ☕\n\n" +
-        "問題の画像を送ってもOKだよ✨",
-    });
-  }
-}
-
-// ==============================
-// Vision API
-// ==============================
-async function callVision(imageBase64, instructions) {
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4.1",
-      messages: [
-        {
-          role: "system",
-          content:
-            "あなたは、明るくやさしく寄り添う先生です。順番に噛み砕いて説明します。",
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: instructions },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${imageBase64}`,
-              },
-            },
-          ],
-        },
-      ],
-    }),
-  });
-
-  const data = await res.json();
-  return data.choices[0].message.content;
-}
-
-// ==============================
-// 画像取得
-// ==============================
-async function getImageBase64(messageId) {
-  const res = await fetch(
-    `https://api-data.line.me/v2/bot/message/${messageId}/content`,
-    {
-      headers: {
-        Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
-      },
-    }
-  );
-  const buffer = await res.arrayBuffer();
-  return Buffer.from(buffer).toString("base64");
-}
-
-// ==============================
-// ヘルスチェック（Railway用）
-// ==============================
-app.get("/", (_, res) => {
-  res.send("OK");
+// ------------- 動作確認用 -------------
+app.get("/", (req, res) => {
+  res.send("Server is running");
 });
 
-app.listen(3000, () => {
-  console.log("くまお先生 起動中 🐻✨");
+// Railway 用ポート番号
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Minimal webhook server running on port ${PORT} 🐻`);
 });
