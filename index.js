@@ -32,12 +32,14 @@ app.post(
       }
     },
   }),
-  (req, res) => {
-    // ★ 最重要：即200返す
+  async (req, res) => {
+    // ✅ まず即200返す（超重要）
     res.status(200).end();
 
-    // 非同期で処理
-    req.body.events.forEach(handleEvent);
+    // あとは裏で処理
+    for (const event of req.body.events) {
+      handleEvent(event).catch(console.error);
+    }
   }
 );
 
@@ -48,7 +50,7 @@ async function handleEvent(event) {
   if (event.type !== "message") return;
 
   // ------------------------------
-  // 画像 → 即解説（状態確認しない）
+  // 画像 → 即解説
   // ------------------------------
   if (event.message.type === "image") {
     try {
@@ -56,17 +58,16 @@ async function handleEvent(event) {
 
       const prompt = `
 あなたは「くまお先生」。
-生徒は問題画像を送っています。
+生徒は「そのまま解説して」と言っています。
 
-・途中で質問しない
-・最初から最後まで解説
+・質問を返さず、最初から最後まで説明
 ・やさしく、順番に
-・板書みたいに整理
+・板書のように整理
 
 ノート構成：
 【今日のまとめ】
 【ポイント】
-【解き方】（1⃣2⃣3⃣）
+【解き方】（計算があれば 1⃣2⃣3⃣）
 
 語尾：
 「このページ、ノートに写しておくと復習しやすいよ🐻✨」
@@ -79,19 +80,30 @@ async function handleEvent(event) {
         text: result,
       });
     } catch (e) {
-      console.error(e);
       await client.replyMessage(event.replyToken, {
         type: "text",
-        text: "ごめんね💦 もう一度画像を送ってもらえるかな？🐻",
+        text: "ごめんね💦 画像の読み取りで失敗したよ。もう一度送ってくれる？🐻",
       });
     }
     return;
   }
 
   // ------------------------------
-  // テキスト → 必ずボタン
+  // テキスト
   // ------------------------------
   if (event.message.type === "text") {
+    const text = event.message.text.trim();
+
+    // 解説トリガー
+    if (text.includes("解説")) {
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "OKだよ🐻✨ 問題の画像を送ってね！",
+      });
+      return;
+    }
+
+    // 初期ボタン
     await client.replyMessage(event.replyToken, {
       type: "text",
       text: "こんにちは😊🐻\n今日は何をする？",
@@ -99,35 +111,19 @@ async function handleEvent(event) {
         items: [
           {
             type: "action",
-            action: {
-              type: "message",
-              label: "① 質問がしたい ✏️",
-              text: "質問がしたい",
-            },
+            action: { type: "message", label: "質問がしたい ✏️", text: "質問がしたい" },
           },
           {
             type: "action",
-            action: {
-              type: "message",
-              label: "② 講義を受けたい 📘",
-              text: "講義を受けたい",
-            },
+            action: { type: "message", label: "講義を受けたい 📘", text: "講義を受けたい" },
           },
           {
             type: "action",
-            action: {
-              type: "message",
-              label: "③ 演習がしたい 📝",
-              text: "演習がしたい",
-            },
+            action: { type: "message", label: "演習したい 📝", text: "演習したい" },
           },
           {
             type: "action",
-            action: {
-              type: "message",
-              label: "④ 雑談したい ☕",
-              text: "雑談したい",
-            },
+            action: { type: "message", label: "雑談したい ☕", text: "雑談したい" },
           },
         ],
       },
@@ -136,7 +132,7 @@ async function handleEvent(event) {
 }
 
 // ==============================
-// OpenAI Vision
+// Vision API
 // ==============================
 async function callVision(imageBase64, instructions) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -148,20 +144,14 @@ async function callVision(imageBase64, instructions) {
     body: JSON.stringify({
       model: "gpt-4.1",
       messages: [
-        {
-          role: "system",
-          content:
-            "あなたはやさしく明るい先生です。中学生にもわかる説明をします。",
-        },
+        { role: "system", content: "やさしく明るい先生として説明してください。" },
         {
           role: "user",
           content: [
             { type: "text", text: instructions },
             {
               type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${imageBase64}`,
-              },
+              image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
             },
           ],
         },
@@ -170,7 +160,7 @@ async function callVision(imageBase64, instructions) {
   });
 
   const data = await res.json();
-  return data.choices[0].message.content;
+  return data.choices?.[0]?.message?.content || "うまく読み取れなかったよ🐻💦";
 }
 
 // ==============================
@@ -180,12 +170,9 @@ async function getImageBase64(messageId) {
   const res = await fetch(
     `https://api-data.line.me/v2/bot/message/${messageId}/content`,
     {
-      headers: {
-        Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}`,
-      },
+      headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
     }
   );
-
   const buffer = await res.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
 }
