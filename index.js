@@ -56,23 +56,53 @@ app.post(
 async function handleEvent(event) {
   if (event.type !== "message") return;
 
-  // テキストだけ処理
-  if (event.message.type === "text") {
-    const userText = event.message.text;
-
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "こんにちは🐻✨\n\n" +
-        "ちゃんと届いてるよ！\n\n" +
-        "今はテスト中だから、\n" +
-        "この返信が来れば成功です🙆‍♂️\n\n" +
-        "送ってくれた内容👇\n" +
-        `「${userText}」`,
-    });
-  }
+// ------------------------------
+// テキストメッセージ（ボタン導線）
+// ------------------------------
+if (event.message.type === "text") {
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text: "こんにちは😊🐻\n\n今日は何をする？\nえらんでね👇",
+    quickReply: {
+      items: [
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "① 質問がしたい ✏️",
+            text: "質問がしたい"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "② 講義を受けたい 📘",
+            text: "講義を受けたい"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "③ 演習がしたい 📝",
+            text: "演習がしたい"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "④ 雑談したい ☕",
+            text: "雑談したい"
+          }
+        }
+      ]
+    }
+  });
+  return;
 }
-
+ 
 // ==============================
 // ヘルスチェック
 // ==============================
