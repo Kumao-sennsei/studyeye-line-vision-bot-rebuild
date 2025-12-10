@@ -33,12 +33,11 @@ app.post(
     },
   }),
   async (req, res) => {
-    try {
-      await Promise.all(req.body.events.map(handleEvent));
-      res.status(200).end();
-    } catch (e) {
-      console.error(e);
-      res.status(500).end();
+    // ✅ 先に200返す（超重要）
+    res.status(200).end();
+
+    for (const event of req.body.events) {
+      handleEvent(event).catch(console.error);
     }
   }
 );
@@ -50,21 +49,20 @@ async function handleEvent(event) {
   if (event.type !== "message") return;
 
   // ------------------------------
-  // ✅ 画像 → 無条件で即解説
+  // 画像 → 即解説
   // ------------------------------
   if (event.message.type === "image") {
     const imageBase64 = await getImageBase64(event.message.id);
 
     const prompt = `
-あなたは「くまお先生」🐻✨
-生徒は「そのまま解説して」と言っています。
+あなたは優しく明るい「くまお先生」。
 
 ・途中で質問しない
-・最初から最後まで丁寧に解説
-・数式は順番に
-・最後にノートまとめを出す
+・最初から最後まで解説
+・順番に、かみくだいて説明
+・板書みたいに整理
+・最後にノートまとめ
 
-【ノート構成】
 【今日のまとめ】
 【ポイント】
 【解き方】（1⃣2⃣3⃣…）
@@ -83,41 +81,29 @@ async function handleEvent(event) {
   }
 
   // ------------------------------
-  // ✅ テキスト
+  // テキスト → ボタン表示
   // ------------------------------
   if (event.message.type === "text") {
-    const text = event.message.text.trim();
-
-    // 解説トリガー
-    if (text.includes("解説")) {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "了解だよ🐻✨ 問題の画像を送ってね！",
-      });
-      return;
-    }
-
-    // ✅ 最初の案内（ボタン）
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text: "こんにちは🐻✨\n今日は何をする？",
+      text: "こんにちは😊🐻\n今日は何をする？",
       quickReply: {
         items: [
           {
             type: "action",
-            action: { type: "message", label: "質問がしたい", text: "質問がしたい" },
+            action: { type: "message", label: "質問がしたい ✏️", text: "質問がしたい" },
           },
           {
             type: "action",
-            action: { type: "message", label: "講義を受けたい", text: "講義を受けたい" },
+            action: { type: "message", label: "講義を受けたい 📘", text: "講義を受けたい" },
           },
           {
             type: "action",
-            action: { type: "message", label: "演習がしたい", text: "演習がしたい" },
+            action: { type: "message", label: "演習したい 📝", text: "演習したい" },
           },
           {
             type: "action",
-            action: { type: "message", label: "雑談がしたい", text: "雑談がしたい" },
+            action: { type: "message", label: "雑談したい ☕", text: "雑談したい" },
           },
         ],
       },
@@ -138,11 +124,7 @@ async function callVision(imageBase64, instructions) {
     body: JSON.stringify({
       model: "gpt-4.1",
       messages: [
-        {
-          role: "system",
-          content:
-            "あなたは、やさしく明るく、かみくだいて教える先生です。",
-        },
+        { role: "system", content: "あなたは親切な先生です。" },
         {
           role: "user",
           content: [
@@ -175,6 +157,7 @@ async function getImageBase64(messageId) {
       },
     }
   );
+
   const buffer = await res.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
 }
