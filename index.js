@@ -83,34 +83,35 @@ async function handleEvent(event) {
     return;
   }
 
-  // ------------------------------
-  // テキスト
-  // ------------------------------
-  const text = event.message.text;
-
-  // ✅ 解説トリガー
-  if (text.includes("そのまま解説")) {
-    userState.set(userId, "explain");
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "了解だよ🐻✨ 問題の画像を送ってね！",
-    });
-    return;
-  }
-
-  // ✅ 初期導線（必ず出す）
+ // ------------------------------
+// テキストメッセージ（最初の導線）
+// ------------------------------
+if (event.message.type === "text") {
   await client.replyMessage(event.replyToken, {
     type: "text",
     text: "こんにちは😊🐻\n今日は何をする？",
     quickReply: {
       items: [
-        qr("質問がしたい ✏️"),
-        qr("講義を受けたい 📘"),
-        qr("演習したい 📝"),
-        qr("雑談したい ☕"),
-      ],
-    },
+        {
+          type: "action",
+          action: { type: "message", label: "質問がしたい ✏️", text: "質問がしたい" }
+        },
+        {
+          type: "action",
+          action: { type: "message", label: "講義を受けたい 📘", text: "講義を受けたい" }
+        },
+        {
+          type: "action",
+          action: { type: "message", label: "演習がしたい 📝", text: "演習がしたい" }
+        },
+        {
+          type: "action",
+          action: { type: "message", label: "雑談したい ☕", text: "雑談がしたい" }
+        }
+      ]
+    }
   });
+  return;
 }
 
 // ==============================
