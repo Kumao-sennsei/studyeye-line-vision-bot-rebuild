@@ -32,12 +32,14 @@ app.post(
       }
     },
   }),
-  (req, res) => {
-    // ✅ 先に200返す（超重要）
+  async (req, res) => {
+    // ✅ 先に200返す（最重要）
     res.status(200).end();
 
-    // ✅ 重い処理は後で
-    req.body.events.forEach(handleEvent);
+    // ✅ 裏で処理
+    for (const event of req.body.events) {
+      handleEvent(event).catch(console.error);
+    }
   }
 );
 
@@ -52,25 +54,25 @@ async function handleEvent(event) {
     const imageBase64 = await getImageBase64(event.message.id);
 
     const prompt = `
-あなたは「くまお先生」。
+あなたは「くまお先生」🐻
 生徒は「そのまま解説して」と言っています。
 
-・途中で質問しない
 ・最初から最後まで解説
+・質問は挟まない
 ・やさしく順番に
-・板書のように整理
+・最後にノートまとめ
 
-ノート構成：
 【今日のまとめ】
 【ポイント】
 【解き方】（1⃣2⃣3⃣）
+
 語尾：
 「このページ、ノートに写しておくと復習しやすいよ🐻✨」
 `;
 
     const result = await callVision(imageBase64, prompt);
 
-    await client.replyMessage(event.replyToken, {
+    await client.pushMessage(event.source.userId, {
       type: "text",
       text: result,
     });
@@ -79,30 +81,16 @@ async function handleEvent(event) {
 
   // テキスト
   if (event.message.type === "text") {
-    const text = event.message.text;
-
-    if (
-      text.includes("解説") ||
-      text.includes("教えて") ||
-      text.includes("説明")
-    ) {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "了解だよ🐻✨ 問題の画像を送ってね！",
-      });
-      return;
-    }
-
     await client.replyMessage(event.replyToken, {
       type: "text",
       text:
-        "こんにちは😊🐻\n\n" +
+        "こんにちは🐻✨\n\n" +
         "今日は何をする？\n\n" +
         "① 質問がしたい ✏️\n" +
         "② 講義を受けたい 📘\n" +
         "③ 演習したい 📝\n" +
         "④ 雑談したい ☕\n\n" +
-        "画像の問題も、そのまま送ってOKだよ✨",
+        "問題の画像を送ってもOKだよ！",
     });
   }
 }
@@ -123,7 +111,7 @@ async function callVision(imageBase64, instructions) {
         {
           role: "system",
           content:
-            "あなたは、やさしく明るく、生徒に寄り添う先生です。",
+            "あなたは、明るく優しい先生。かみくだいて説明します。",
         },
         {
           role: "user",
@@ -157,7 +145,6 @@ async function getImageBase64(messageId) {
       },
     }
   );
-
   const buffer = await res.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
 }
