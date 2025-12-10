@@ -16,6 +16,9 @@ const client = new Client({
   channelAccessToken: CHANNEL_ACCESS_TOKEN,
 });
 
+// ✅ 超重要：簡易ステート（本番はDB）
+const userState = new Map();
+
 // ==============================
 // Webhook
 // ==============================
@@ -33,9 +36,7 @@ app.post(
     },
   }),
   async (req, res) => {
-    // ✅ 先に200返す（超重要）
-    res.status(200).end();
-
+    res.status(200).end(); // ✅ 即200返す（502防止）
     for (const event of req.body.events) {
       handleEvent(event).catch(console.error);
     }
@@ -47,6 +48,7 @@ app.post(
 // ==============================
 async function handleEvent(event) {
   if (event.type !== "message") return;
+  const userId = event.source.userId;
 
   // ------------------------------
   // 画像 → 即解説
@@ -55,17 +57,18 @@ async function handleEvent(event) {
     const imageBase64 = await getImageBase64(event.message.id);
 
     const prompt = `
-あなたは優しく明るい「くまお先生」。
+あなたは「くまお先生」🐻
+生徒は「そのまま解説して」と言っています。
 
-・途中で質問しない
+・質問はしない
 ・最初から最後まで解説
-・順番に、かみくだいて説明
+・やさしく順番に
 ・板書みたいに整理
-・最後にノートまとめ
 
+ノート構成：
 【今日のまとめ】
 【ポイント】
-【解き方】（1⃣2⃣3⃣…）
+【解き方】（1⃣2⃣3⃣）
 
 語尾：
 「このページ、ノートに写しておくと復習しやすいよ🐻✨」
@@ -81,34 +84,33 @@ async function handleEvent(event) {
   }
 
   // ------------------------------
-  // テキスト → ボタン表示
+  // テキスト
   // ------------------------------
-  if (event.message.type === "text") {
+  const text = event.message.text;
+
+  // ✅ 解説トリガー
+  if (text.includes("そのまま解説")) {
+    userState.set(userId, "explain");
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text: "こんにちは😊🐻\n今日は何をする？",
-      quickReply: {
-        items: [
-          {
-            type: "action",
-            action: { type: "message", label: "質問がしたい ✏️", text: "質問がしたい" },
-          },
-          {
-            type: "action",
-            action: { type: "message", label: "講義を受けたい 📘", text: "講義を受けたい" },
-          },
-          {
-            type: "action",
-            action: { type: "message", label: "演習したい 📝", text: "演習したい" },
-          },
-          {
-            type: "action",
-            action: { type: "message", label: "雑談したい ☕", text: "雑談したい" },
-          },
-        ],
-      },
+      text: "了解だよ🐻✨ 問題の画像を送ってね！",
     });
+    return;
   }
+
+  // ✅ 初期導線（必ず出す）
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text: "こんにちは😊🐻\n今日は何をする？",
+    quickReply: {
+      items: [
+        qr("質問がしたい ✏️"),
+        qr("講義を受けたい 📘"),
+        qr("演習したい 📝"),
+        qr("雑談したい ☕"),
+      ],
+    },
+  });
 }
 
 // ==============================
@@ -124,7 +126,11 @@ async function callVision(imageBase64, instructions) {
     body: JSON.stringify({
       model: "gpt-4.1",
       messages: [
-        { role: "system", content: "あなたは親切な先生です。" },
+        {
+          role: "system",
+          content:
+            "あなたは、やさしく明るく、生徒に寄り添う先生です。",
+        },
         {
           role: "user",
           content: [
@@ -146,7 +152,7 @@ async function callVision(imageBase64, instructions) {
 }
 
 // ==============================
-// 画像取得
+// LINE画像取得
 // ==============================
 async function getImageBase64(messageId) {
   const res = await fetch(
@@ -157,9 +163,22 @@ async function getImageBase64(messageId) {
       },
     }
   );
-
   const buffer = await res.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
+}
+
+// ==============================
+// QuickReply helper
+// ==============================
+function qr(label) {
+  return {
+    type: "action",
+    action: {
+      type: "message",
+      label,
+      text: label,
+    },
+  };
 }
 
 // ==============================
