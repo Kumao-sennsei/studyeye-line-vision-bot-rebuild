@@ -73,20 +73,27 @@ async function callVision(imageBase64, instructions) {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      Authorization: `Bearer ${OPENAI_API_KEY}`
     },
     body: JSON.stringify({
       model: "gpt-4.1",
       messages: [
-  { role: "system", content: visionSystemPrompt },
-  {
-    role: "user",
-    content: [
-      { type: "text", text: instructions },
-      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } }
-    ]
-  }
-]
+        { role: "system", content: visionSystemPrompt },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: instructions },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${imageBase64}`
+              }
+            }
+          ]
+        }
+      ]
+    })
+  });
 
   if (!res.ok) {
     console.error(await res.text());
@@ -94,8 +101,9 @@ async function callVision(imageBase64, instructions) {
   }
 
   const data = await res.json();
-  return sanitize(data.choices?.[0]?.message?.content || "");
+  return data.choices[0].message.content;
 }
+
 
 // -----------------------------------------------
 // LINE返信
