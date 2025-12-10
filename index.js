@@ -1,12 +1,11 @@
 import express from "express";
 import crypto from "crypto";
-import fetch from "node-fetch";
 import { Client } from "@line/bot-sdk";
 
 const app = express();
 
 /* =====================
-   環境変数
+  環境変数
 ===================== */
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
@@ -16,7 +15,7 @@ const client = new Client({
 });
 
 /* =====================
-   Webhook（最重要）
+  Webhook
 ===================== */
 app.post(
   "/webhook",
@@ -33,20 +32,18 @@ app.post(
     },
   }),
   async (req, res) => {
-    // ✅ まず即200返す（タイムアウト防止）
-    res.status(200).end();
-
-    // ✅ あとは非同期で処理
     try {
       await Promise.all(req.body.events.map(handleEvent));
+      res.status(200).end(); // ← 502防止の最重要ポイント
     } catch (err) {
-      console.error("handleEvent error:", err);
+      console.error(err);
+      res.status(200).end(); // ← LINEには必ず200を返す
     }
   }
 );
 
 /* =====================
-   メイン処理
+  メイン処理
 ===================== */
 async function handleEvent(event) {
   if (event.type !== "message") return;
@@ -55,51 +52,71 @@ async function handleEvent(event) {
   if (event.message.type === "text") {
     const text = event.message.text.trim();
 
-    // 初回 or 何でもいい入力
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "こんにちは😊🐻\n今日は何をする？",
-      quickReply: {
-        items: [
-          button("質問がしたい", "質問"),
-          button("講義を受けたい", "講義"),
-          button("演習がしたい", "演習"),
-          button("雑談したい", "雑談"),
-        ],
-      },
-    });
-  }
+    // 初回 or こんにちは
+    if (text === "こんにちは" || text === "はじめまして") {
+      return replyMenu(event.replyToken);
+    }
 
-  /* ---------- 画像 ---------- */
-  if (event.message.type === "image") {
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "画像ありがとう🐻✨\n\n" +
-        "この問題、\n" +
-        "✅ そのまま解説\n" +
-        "✅ 自分の答えを送って採点\n\n" +
-        "どっちにする？",
-    });
+    // ① 質問
+    if (text.startsWith("①")) {
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text:
+          "いいね！質問だね🐻✨\n\n" +
+          "・問題文を送る\n" +
+          "・写真を送る\n" +
+          "・文章で質問\n\n" +
+          "どれでもOKだよ！",
+      });
+    }
+
+    // ② 講義
+    if (text.startsWith("②")) {
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text:
+          "了解！講義モード📘✨\n\n" +
+          "・教科（数学・物理・化学など）\n" +
+          "・単元（例：2次関数、微分）\n\n" +
+          "を教えてね！",
+      });
+    }
+
+    // ③ 演習
+    if (text.startsWith("③")) {
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text:
+          "演習モードだね📝🔥\n\n" +
+          "・教科\n" +
+          "・レベル（基礎〜難関）\n\n" +
+          "を教えてくれたら問題を出すよ！",
+      });
+    }
+
+    // その他
+    return replyMenu(event.replyToken);
   }
 }
 
 /* =====================
-   ボタン生成
+  メニュー返信
 ===================== */
-function button(label, text) {
-  return {
-    type: "action",
-    action: {
-      type: "message",
-      label,
-      text,
-    },
-  };
+function replyMenu(replyToken) {
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text:
+      "こんにちは🐻✨\n\n" +
+      "今日は何をする？\n\n" +
+      "① 質問がしたい ✏️\n" +
+      "② 講義を受けたい 📘\n" +
+      "③ 演習がしたい 📝\n" +
+      "④ 雑談したい ☕",
+  });
 }
 
 /* =====================
-   サーバー起動
+  起動
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
