@@ -1,13 +1,10 @@
 import express from "express";
-import crypto from "crypto";
 import fetch from "node-fetch";
+import crypto from "crypto";
 import { Client } from "@line/bot-sdk";
 
 const app = express();
 
-// ==============================
-// 環境変数
-// ==============================
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -15,6 +12,11 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const client = new Client({
   channelAccessToken: CHANNEL_ACCESS_TOKEN,
 });
+
+// ==============================
+// ユーザー状態（超重要）
+// ==============================
+const userState = new Map();
 
 // ==============================
 // Webhook
@@ -32,13 +34,12 @@ app.post(
       }
     },
   }),
-  async (req, res) => {
-    // ✅ 先に200を返す（超重要）
+  (req, res) => {
+    // ✅ 先に200返す（最重要）
     res.status(200).end();
 
-    for (const event of req.body.events) {
-      handleEvent(event).catch(console.error);
-    }
+    // 裏で処理
+    req.body.events.forEach(handleEvent).catch(console.error);
   }
 );
 
@@ -48,63 +49,61 @@ app.post(
 async function handleEvent(event) {
   if (event.type !== "message") return;
 
-  // ---------- テキスト ----------
-  if (event.message.type === "text") {
+  const userId = event.source.userId;
+
+  // ------------------------------
+  // 画像 → 解説モードなら即解析
+  // ------------------------------
+  if (event.message.type === "image") {
+    if (userState.get(userId) !== "explain") {
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "この問題、解説していいかな？\n「そのまま解説して」って送ってね🐻✨",
+      });
+      return;
+    }
+
+    const imageBase64 = await getImageBase64(event.message.id);
+    const result = await callVision(imageBase64);
+
     await client.replyMessage(event.replyToken, {
-      type: "flex",
-      altText: "メニュー",
-      contents: menuFlex(),
+      type: "text",
+      text: result,
+    });
+
+    userState.delete(userId);
+    return;
+  }
+
+  // ------------------------------
+  // テキスト
+  // ------------------------------
+  const text = event.message.text.trim();
+
+  if (text.includes("そのまま解説")) {
+    userState.set(userId, "explain");
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "了解だよ🐻✨ 問題の画像を送ってね！",
     });
     return;
   }
 
-  // ---------- 画像 ----------
-  if (event.message.type === "image") {
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "画像ありがとう🐻✨\n\n" +
-        "この問題を【そのまま最初から】解説するね。\n" +
-        "少し待っててね📘",
-    });
-
-    const imageBase64 = await getImageBase64(event.message.id);
-    const answer = await callVision(imageBase64);
-
-    await client.pushMessage(event.source.userId, {
-      type: "text",
-      text: answer,
-    });
-  }
-}
-
-// ==============================
-// メニュー（安定版）
-// ==============================
-function menuFlex() {
-  const btn = (label, emoji) => ({
-    type: "button",
-    style: "primary",
-    action: { type: "message", label, text: label },
-    color: "#6FCF97",
-  });
-
-  return {
-    type: "bubble",
-    body: {
-      type: "box",
-      layout: "vertical",
-      spacing: "md",
-      contents: [
-        { type: "text", text: "こんにちは🐻✨", weight: "bold", size: "lg" },
-        { type: "text", text: "今日は何をする？", wrap: true },
-        btn("質問がしたい ✏️"),
-        btn("講義を受けたい 📘"),
-        btn("演習がしたい 📝"),
-        btn("雑談したい ☕"),
+  // ------------------------------
+  // 初期ボタン
+  // ------------------------------
+  await client.replyMessage(event.replyToken, {
+    type: "text",
+    text: "こんにちは😊🐻\n今日は何をする？",
+    quickReply: {
+      items: [
+        replyBtn("質問がしたい"),
+        replyBtn("講義を受けたい"),
+        replyBtn("演習がしたい"),
+        replyBtn("雑談がしたい"),
       ],
     },
-  };
+  });
 }
 
 // ==============================
@@ -122,19 +121,22 @@ async function callVision(imageBase64) {
       messages: [
         {
           role: "system",
-          content:
-            "あなたはくまお先生。やさしく順番に、途中で質問せず最後まで解説する。",
+          content: `
+あなたは「くまお先生」。
+途中で質問せず、最初から最後までやさしく解説。
+
+【今日のまとめ】
+【ポイント】
+【解き方】1⃣2⃣3⃣
+
+語尾：
+「このページ、ノートに写しておくと復習しやすいよ🐻✨」
+`,
         },
         {
           role: "user",
           content: [
-            { type: "text", text: "この問題をそのまま解説して。" },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${imageBase64}`,
-              },
-            },
+            { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
           ],
         },
       ],
@@ -162,6 +164,13 @@ async function getImageBase64(messageId) {
 }
 
 // ==============================
+function replyBtn(label) {
+  return {
+    type: "action",
+    action: { type: "message", label, text: label },
+  };
+}
+
 app.listen(3000, () => {
   console.log("くまお先生 起動中 🐻✨");
 });
