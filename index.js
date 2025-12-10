@@ -123,6 +123,51 @@ async function handleEvent(event) {
     global.userState.lastImageBase64 = null;
     return;
   }
+// ==============================
+// メニュー表示（必ず反応する安全装置）
+// ==============================
+async function replyMenu(replyToken) {
+  await client.replyMessage(replyToken, {
+    type: "text",
+    text: "こんにちは🐻✨\n今日は何をする？",
+    quickReply: {
+      items: [
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "✏️ 質問がしたい",
+            text: "質問がしたい"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "📘 講義を受けたい",
+            text: "講義を受けたい"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "📝 演習がしたい",
+            text: "演習がしたい"
+          }
+        },
+        {
+          type: "action",
+          action: {
+            type: "message",
+            label: "☕ 雑談がしたい",
+            text: "雑談がしたい"
+          }
+        }
+      ]
+    }
+  });
+}
 
   // ===== モード選択 =====
   if (text.includes("質問")) {
