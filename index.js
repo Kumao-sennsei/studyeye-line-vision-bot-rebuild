@@ -32,14 +32,12 @@ app.post(
       }
     },
   }),
-  async (req, res) => {
-    // ✅ 先に200返す（最重要）
+  (req, res) => {
+    // ✅ 最重要：即200返す
     res.status(200).end();
 
-    // ✅ 裏で処理
-    for (const event of req.body.events) {
-      handleEvent(event).catch(console.error);
-    }
+    // ✅ あとは裏で処理
+    Promise.all(req.body.events.map(handleEvent)).catch(console.error);
   }
 );
 
@@ -49,22 +47,25 @@ app.post(
 async function handleEvent(event) {
   if (event.type !== "message") return;
 
+  // ------------------------------
   // 画像 → 即解説
+  // ------------------------------
   if (event.message.type === "image") {
     const imageBase64 = await getImageBase64(event.message.id);
 
     const prompt = `
-あなたは「くまお先生」🐻
+あなたは「くまお先生」。
 生徒は「そのまま解説して」と言っています。
 
+・途中で質問しない
 ・最初から最後まで解説
-・質問は挟まない
-・やさしく順番に
-・最後にノートまとめ
+・順番に、やさしく
+・板書のように整理
 
+ノート構成：
 【今日のまとめ】
 【ポイント】
-【解き方】（1⃣2⃣3⃣）
+【解き方】（あれば 1⃣2⃣3⃣）
 
 語尾：
 「このページ、ノートに写しておくと復習しやすいよ🐻✨」
@@ -72,25 +73,27 @@ async function handleEvent(event) {
 
     const result = await callVision(imageBase64, prompt);
 
-    await client.pushMessage(event.source.userId, {
+    await client.replyMessage(event.replyToken, {
       type: "text",
       text: result,
     });
     return;
   }
 
+  // ------------------------------
   // テキスト
+  // ------------------------------
   if (event.message.type === "text") {
     await client.replyMessage(event.replyToken, {
       type: "text",
       text:
-        "こんにちは🐻✨\n\n" +
+        "こんにちは😊🐻\n\n" +
         "今日は何をする？\n\n" +
         "① 質問がしたい ✏️\n" +
         "② 講義を受けたい 📘\n" +
-        "③ 演習したい 📝\n" +
+        "③ 演習がしたい 📝\n" +
         "④ 雑談したい ☕\n\n" +
-        "問題の画像を送ってもOKだよ！",
+        "問題の画像を送ってもOKだよ✨",
     });
   }
 }
@@ -111,7 +114,7 @@ async function callVision(imageBase64, instructions) {
         {
           role: "system",
           content:
-            "あなたは、明るく優しい先生。かみくだいて説明します。",
+            "あなたは、明るくやさしく寄り添う先生です。順番に噛み砕いて説明します。",
         },
         {
           role: "user",
@@ -150,6 +153,12 @@ async function getImageBase64(messageId) {
 }
 
 // ==============================
+// ヘルスチェック（Railway用）
+// ==============================
+app.get("/", (_, res) => {
+  res.send("OK");
+});
+
 app.listen(3000, () => {
   console.log("くまお先生 起動中 🐻✨");
 });
