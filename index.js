@@ -78,20 +78,15 @@ async function callVision(imageBase64, instructions) {
     body: JSON.stringify({
       model: "gpt-4.1",
       messages: [
-        { role: "system", content: "あなたは優しい数学・理科の先生くまおです。Markdown記号は禁止。" },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: instructions },
-            {
-              type: "image_url",
-              image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
-            },
-          ],
-        },
-      ],
-    }),
-  });
+  { role: "system", content: visionSystemPrompt },
+  {
+    role: "user",
+    content: [
+      { type: "text", text: instructions },
+      { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageBase64}` } }
+    ]
+  }
+]
 
   if (!res.ok) {
     console.error(await res.text());
