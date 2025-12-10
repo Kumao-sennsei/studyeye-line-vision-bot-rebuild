@@ -5,9 +5,9 @@ import { Client } from "@line/bot-sdk";
 
 const app = express();
 
-// ==============================
-// 環境変数
-// ==============================
+/* =====================
+   環境変数
+===================== */
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 
@@ -15,9 +15,9 @@ const client = new Client({
   channelAccessToken: CHANNEL_ACCESS_TOKEN,
 });
 
-// ==============================
-// Webhook（最重要）
-// ==============================
+/* =====================
+   Webhook（最重要）
+===================== */
 app.post(
   "/webhook",
   express.json({
@@ -32,53 +32,76 @@ app.post(
       }
     },
   }),
-  (req, res) => {
-    // ✅ 何があっても即200返す
+  async (req, res) => {
+    // ✅ まず即200返す（タイムアウト防止）
     res.status(200).end();
 
-    // ✅ あとで処理（非同期）
-    req.body.events.forEach(handleEvent);
+    // ✅ あとは非同期で処理
+    try {
+      await Promise.all(req.body.events.map(handleEvent));
+    } catch (err) {
+      console.error("handleEvent error:", err);
+    }
   }
 );
 
-// ==============================
-// メイン処理
-// ==============================
+/* =====================
+   メイン処理
+===================== */
 async function handleEvent(event) {
   if (event.type !== "message") return;
 
-  // ------------------------------
-  // テキスト
-  // ------------------------------
+  /* ---------- テキスト ---------- */
   if (event.message.type === "text") {
+    const text = event.message.text.trim();
+
+    // 初回 or 何でもいい入力
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text:
-        "こんにちは🐻✨\n\n" +
-        "今日は何をする？\n\n" +
-        "① 質問がしたい\n" +
-        "② 講義を受けたい\n" +
-        "③ 演習がしたい\n" +
-        "④ 雑談したい\n\n" +
-        "画像の問題も送ってOKだよ📸",
+      text: "こんにちは😊🐻\n今日は何をする？",
+      quickReply: {
+        items: [
+          button("質問がしたい", "質問"),
+          button("講義を受けたい", "講義"),
+          button("演習がしたい", "演習"),
+          button("雑談したい", "雑談"),
+        ],
+      },
     });
   }
 
-  // ------------------------------
-  // 画像（今はテスト返信だけ）
-  // ------------------------------
+  /* ---------- 画像 ---------- */
   if (event.message.type === "image") {
     await client.replyMessage(event.replyToken, {
       type: "text",
       text:
-        "画像ありがとう🐻✨\n" +
-        "今からこの問題をやさしく解説するね！\n\n" +
-        "（※ 次のステップでAI解説をつなぐよ）",
+        "画像ありがとう🐻✨\n\n" +
+        "この問題、\n" +
+        "✅ そのまま解説\n" +
+        "✅ 自分の答えを送って採点\n\n" +
+        "どっちにする？",
     });
   }
 }
 
-// ==============================
-app.listen(3000, () => {
-  console.log("✅ くまお先生 起動中 🐻✨");
+/* =====================
+   ボタン生成
+===================== */
+function button(label, text) {
+  return {
+    type: "action",
+    action: {
+      type: "message",
+      label,
+      text,
+    },
+  };
+}
+
+/* =====================
+   サーバー起動
+===================== */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("くまお先生 起動中 🐻✨");
 });
