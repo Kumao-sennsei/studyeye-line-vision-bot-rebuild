@@ -88,6 +88,10 @@ async function handleEvent(event) {
       });
       return;
     }
+  // どれにも当てはまらなかったら必ずメニュー
+  await replyMenu(event.replyToken);
+  return;
+}
 
     const prompt = `
 あなたは「くまお先生」。
