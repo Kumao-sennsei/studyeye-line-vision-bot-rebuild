@@ -17,15 +17,7 @@ const client = new Client({
 });
 
 // ==============================
-// 会話状態（超重要）
-// ==============================
-global.userState = {
-  mode: "menu", // menu / question / lecture / practice / chat
-  lastImageBase64: null,
-};
-
-// ==============================
-// Webhook 検証
+// Webhook
 // ==============================
 app.post(
   "/webhook",
@@ -58,153 +50,79 @@ async function handleEvent(event) {
   if (event.type !== "message") return;
 
   // ------------------------------
-  // 画像メッセージ（保存のみ）
+  // ✅ 画像 → 無条件で即解説
   // ------------------------------
   if (event.message.type === "image") {
     const imageBase64 = await getImageBase64(event.message.id);
-    global.userState.lastImageBase64 = imageBase64;
-
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "画像を受け取ったよ🐻✨\n" +
-        "このまま解説するなら「そのまま解説して」って言ってね😊",
-    });
-    return;
-  }
-
-  // ------------------------------
-  // テキストメッセージ
-  // ------------------------------
-  if (event.message.type !== "text") return;
-  const text = event.message.text.trim();
-
-  // ===== 解説トリガー =====
-  if (text.includes("そのまま解説")) {
-    if (!global.userState.lastImageBase64) {
-      await client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "問題の画像を先に送ってね🐻💦",
-      });
-      return;
-    }
-  // どれにも当てはまらなかったら必ずメニュー
-  await replyMenu(event.replyToken);
-  return;
-}
 
     const prompt = `
-あなたは「くまお先生」。
-生徒はすでに「そのまま解説して」と言っています。
+あなたは「くまお先生」🐻✨
+生徒は「そのまま解説して」と言っています。
 
-・途中で質問を挟まない
-・最初から最後まで順番に説明
-・やさしく、明るく、板書のように整理
-・数学・理科は【解き方】を 1⃣2⃣3⃣… で書く
+・途中で質問しない
+・最初から最後まで丁寧に解説
+・数式は順番に
 ・最後にノートまとめを出す
 
-ノート構成：
+【ノート構成】
 【今日のまとめ】
 【ポイント】
-【解き方】
+【解き方】（1⃣2⃣3⃣…）
 
 語尾：
 「このページ、ノートに写しておくと復習しやすいよ🐻✨」
 `;
 
-    const result = await callVision(
-      global.userState.lastImageBase64,
-      prompt
-    );
+    const result = await callVision(imageBase64, prompt);
 
     await client.replyMessage(event.replyToken, {
       type: "text",
       text: result,
     });
-
-    // 状態リセット
-    global.userState.mode = "menu";
-    global.userState.lastImageBase64 = null;
     return;
   }
-// ==============================
-// メニュー表示（必ず反応する安全装置）
-// ==============================
-async function replyMenu(replyToken) {
-  await client.replyMessage(replyToken, {
-    type: "text",
-    text: "こんにちは🐻✨\n今日は何をする？",
-    quickReply: {
-      items: [
-        {
-          type: "action",
-          action: {
-            type: "message",
-            label: "✏️ 質問がしたい",
-            text: "質問がしたい"
-          }
-        },
-        {
-          type: "action",
-          action: {
-            type: "message",
-            label: "📘 講義を受けたい",
-            text: "講義を受けたい"
-          }
-        },
-        {
-          type: "action",
-          action: {
-            type: "message",
-            label: "📝 演習がしたい",
-            text: "演習がしたい"
-          }
-        },
-        {
-          type: "action",
-          action: {
-            type: "message",
-            label: "☕ 雑談がしたい",
-            text: "雑談がしたい"
-          }
-        }
-      ]
+
+  // ------------------------------
+  // ✅ テキスト
+  // ------------------------------
+  if (event.message.type === "text") {
+    const text = event.message.text.trim();
+
+    // 解説トリガー
+    if (text.includes("解説")) {
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "了解だよ🐻✨ 問題の画像を送ってね！",
+      });
+      return;
     }
-  });
-}
 
-  // ===== モード選択 =====
-  if (text.includes("質問")) {
-    global.userState.mode = "question";
+    // ✅ 最初の案内（ボタン）
     await client.replyMessage(event.replyToken, {
       type: "text",
-      text: "OKだよ🐻✨ 質問だね！問題文や写真を送ってね😊",
+      text: "こんにちは🐻✨\n今日は何をする？",
+      quickReply: {
+        items: [
+          {
+            type: "action",
+            action: { type: "message", label: "質問がしたい", text: "質問がしたい" },
+          },
+          {
+            type: "action",
+            action: { type: "message", label: "講義を受けたい", text: "講義を受けたい" },
+          },
+          {
+            type: "action",
+            action: { type: "message", label: "演習がしたい", text: "演習がしたい" },
+          },
+          {
+            type: "action",
+            action: { type: "message", label: "雑談がしたい", text: "雑談がしたい" },
+          },
+        ],
+      },
     });
-    return;
   }
-
-  if (text.includes("講義")) {
-    global.userState.mode = "lecture";
-    await client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "講義だね📘 どの単元を聞きたいか教えてね🐻✨",
-    });
-    return;
-  }
-
-  // ===== 初期メニュー =====
-  await client.replyMessage(event.replyToken, {
-    type: "text",
-    text:
-      "こんにちは😊🐻\n\n" +
-      "今日は何をする？\n" +
-      "👇 えらんでね！\n\n" +
-      "① 質問がしたい ✏️\n" +
-      "② 講義を受けたい 📘\n" +
-      "③ 演習したい 📝\n" +
-      "④ 雑談したい ☕\n\n" +
-      "問題の写真はそのまま送ってOKだよ✨",
-  });
 }
 
 // ==============================
@@ -223,7 +141,7 @@ async function callVision(imageBase64, instructions) {
         {
           role: "system",
           content:
-            "あなたは、やさしく明るく、生徒に寄り添う先生です。",
+            "あなたは、やさしく明るく、かみくだいて教える先生です。",
         },
         {
           role: "user",
@@ -257,7 +175,6 @@ async function getImageBase64(messageId) {
       },
     }
   );
-
   const buffer = await res.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
 }
