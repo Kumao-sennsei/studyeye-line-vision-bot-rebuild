@@ -26,6 +26,8 @@ const client = new Client({
 // question_text
 // waiting_answer
 // after_question
+// exercise_question
+// exercise_waiting_answer
 const userState = {};
 
 /* =====================
@@ -61,7 +63,7 @@ app.post(
 async function handleEvent(event) {
   const userId = event.source.userId;
 
-  /* -------- 画像 -------- */
+  /* ---------- 画像 ---------- */
   if (event.message.type === "image") {
     userState[userId] = {
       mode: "waiting_answer",
@@ -73,11 +75,11 @@ async function handleEvent(event) {
       text:
         "画像を受け取ったよ🐻✨\n\n" +
         "この問題の公式の答え（問題集やプリントの答え）を送ってね。\n" +
-        "もし手元になければ「答えなし」と送って大丈夫だよ。",
+        "手元になければ「答えなし」で大丈夫だよ。",
     });
   }
 
-  /* -------- テキスト -------- */
+  /* ---------- テキスト ---------- */
   if (event.message.type !== "text") return;
   const text = event.message.text.trim();
 
@@ -101,96 +103,11 @@ async function handleEvent(event) {
   /* 解説後の分岐 */
   if (userState[userId]?.mode === "after_question") {
     if (text.includes("類題") || text.includes("練習")) {
-      userState[userId] = null;
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "いいね🐻🔥\n" +
-          "じゃあ演習モードに進もう。\n" +
-          "このあと、似た問題を出すよ。",
-      });
+      userState[userId] = { mode: "exercise_question" };
+      return sendExerciseQuestion(event.replyToken, userId);
     }
-/* =====================
-   演習モード：類題出題
-===================== */
-if (userState[userId]?.mode === "exercise_question") {
-  userState[userId].mode = "exercise_waiting_answer";
 
-  const exercisePrompt = `
-あなたは「くまお先生」。
-さっきの問題と同じ考え方で解ける、数字だけ変えた類題を1問作ってください。
-
-条件：
-・問題文は短く
-・途中の解説は書かない
-・答えはまだ書かない
-・中学生でも読める日本語
-`;
-
-  const question = await callOpenAI([
-    { role: "system", content: exercisePrompt },
-    { role: "user", content: "類題を1問出してください。" },
-  ]);
-
-  userState[userId].exerciseQuestion = question;
-
-  return client.replyMessage(event.replyToken, {
-    type: "text",
-    text:
-      "いいね🐻🔥\n\n" +
-      question +
-      "\n\n答えだけ送っても大丈夫だよ。",
-  });
-}
-/* =====================
-   演習モード：解答判定
-===================== */
-if (userState[userId]?.mode === "exercise_waiting_answer") {
-  const userAnswer = text;
-  const question = userState[userId].exerciseQuestion;
-
-  const judgePrompt = `
-次の問題と生徒の答えを見て、正しいかどうかだけを判断してください。
-正解なら「正解」。
-違うなら「不正解」。
-理由や解説は書かない。
-
-問題：
-${question}
-
-生徒の答え：
-${userAnswer}
-`;
-
-  const judge = await callOpenAI([
-    { role: "system", content: judgePrompt },
-  ]);
-
-  let reply = "";
-
-  if (judge.includes("正解")) {
-    reply =
-      "いいね！その答えで合ってるよ🐻✨\n\n" +
-      "どうする？\n" +
-      "・もう1問、類題を解く\n" +
-      "・質問に戻る";
-  } else {
-    reply =
-      "惜しいところまで来てるよ🐻✨\n\n" +
-      "どうする？\n" +
-      "・もう一度考えてみる\n" +
-      "・質問に戻る";
-  }
-
-  userState[userId].mode = "after_question";
-
-  return client.replyMessage(event.replyToken, {
-    type: "text",
-    text: reply,
-  });
-}
-
-    // 普通の質問なら質問モード継続
+    // ほかの質問なら質問モードに戻す
     userState[userId] = { mode: "question_text" };
   }
 
@@ -222,6 +139,39 @@ ${userAnswer}
 }
 
 /* =====================
+   演習モード：類題出題
+===================== */
+async function sendExerciseQuestion(replyToken, userId) {
+  const prompt = `
+あなたは「くまお先生」。
+さっきの問題と同じ考え方で解ける、数字だけ変えた類題を1問作ってください。
+
+条件：
+・問題文だけを書く
+・途中の説明や答えは書かない
+・中学生にも読める日本語
+`;
+
+  const question = await callOpenAI([
+    { role: "system", content: prompt },
+    { role: "user", content: "類題を1問出してください。" },
+  ]);
+
+  userState[userId] = {
+    mode: "exercise_waiting_answer",
+    exerciseQuestion: question,
+  };
+
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text:
+      "いいね🐻🔥\n\n" +
+      question +
+      "\n\n答えだけ送っても大丈夫だよ。",
+  });
+}
+
+/* =====================
    Vision質問
 ===================== */
 async function runVisionQuestionMode(imageBase64, officialAnswer) {
@@ -229,15 +179,16 @@ async function runVisionQuestionMode(imageBase64, officialAnswer) {
 あなたは「くまお先生」。
 中学生にもわかるように、やさしく説明する先生です。
 
-【必ず守ること】
-・Markdown記号は禁止
-・LaTeXは禁止
-・太字や装飾は禁止
-・数式は x² や × − をそのまま使ってよい
-・難しい言葉は禁止
-・同じ式を何度も書かない
+禁止：
+・Markdown記号
+・LaTeX
+・難しい言葉
+・同じ式の繰り返し
 
-【構成】
+OK：
+・x² や × − は使ってよい
+
+構成：
 【問題の要点】
 【解き方】
 1⃣
@@ -246,7 +197,8 @@ async function runVisionQuestionMode(imageBase64, officialAnswer) {
 【解説】
 【答え】
 
-最後に質問や類題への誘導文をつける
+最後に
+ほかに聞きたいことがあるか、類題に進むか聞く
 `;
 
   return callOpenAI([
@@ -276,6 +228,7 @@ async function runTextQuestionMode(text) {
   const prompt = `
 あなたは「くまお先生」。
 
+構成：
 【問題の要点】
 【解き方】
 1⃣
@@ -285,8 +238,7 @@ async function runTextQuestionMode(text) {
 【答え】
 
 最後に
-「ほかに聞きたいことある？それともこの問題の類題を解いてみる？」
-と必ず書く
+ほかに聞きたいことがあるか、類題を解くか聞く
 `;
 
   return callOpenAI([
@@ -347,5 +299,5 @@ function replyMenu(replyToken) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 質問モード 完全版 起動！");
+  console.log("🐻✨ 質問＋演習モード 完成版 起動！");
 });
