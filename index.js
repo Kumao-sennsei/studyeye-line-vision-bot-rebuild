@@ -98,30 +98,37 @@ async function handleEvent(event) {
     });
   }
 
-  /* 解説後 */
-  if (userState[userId]?.mode === "after_question") {
-    if (text.includes("類題")) {
-      userState[userId].mode = "exercise";
+  /* 解説後の分岐 */
+if (userState[userId]?.mode === "after_question") {
 
-      const exercise = await generateExercise(
-        userState[userId].originalProblemText,
-        userState[userId].detectedSubject
-      );
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "【類題】\n" + exercise + "\n\n答えだけ送ってみよう🐻✨",
-      });
-    }
-
-    if (text.includes("質問")) {
-      userState[userId] = { mode: "question_text" };
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "OK！続けて質問してね🐻✨",
-      });
-    }
+  // 類題・練習 → 演習モード
+  if (text.includes("類題") || text.includes("練習")) {
+    userState[userId] = { mode: "exercise_question" };
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "いいね🐻🔥\n" +
+        "じゃあ演習モードに進もう。\n" +
+        "このあと、同じ形で数字だけ変えた問題を出すよ。",
+    });
   }
+
+  // お礼など → 質問に戻す
+  if (text.includes("ありがとう") || text.includes("助かりました")) {
+    userState[userId] = { mode: "question_text" };
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "どういたしまして🐻✨\n" +
+        "ほかにも聞きたいことがあれば、そのまま聞いてね。",
+    });
+  }
+
+  // それ以外 → 普通の質問として処理
+  userState[userId] = { mode: "question_text" };
+}
+
+  
 
   /* 質問モード開始 */
   if (text === "①" || text === "質問") {
