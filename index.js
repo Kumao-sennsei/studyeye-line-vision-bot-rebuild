@@ -22,6 +22,7 @@ const client = new Client({
 /* =====================
    ユーザー状態
 ===================== */
+// userState[userId] = { mode, imageId }
 const userState = {};
 
 /* =====================
@@ -45,19 +46,19 @@ app.post(
       await Promise.all(req.body.events.map(handleEvent));
       res.status(200).end();
     } catch (err) {
-      console.error("Webhook Error:", err);
+      console.error(err);
       res.status(200).end();
     }
   }
 );
 
 /* =====================
-   メイン処理
+   メイン処理（質問モードのみ）
 ===================== */
 async function handleEvent(event) {
   const userId = event.source.userId;
 
-  /* 画像 → 答え待ち */
+  /* -------- 画像 -------- */
   if (event.message.type === "image") {
     userState[userId] = {
       mode: "waiting_answer",
@@ -68,22 +69,22 @@ async function handleEvent(event) {
       type: "text",
       text:
         "画像を受け取ったよ🐻✨\n\n" +
-        "この問題の公式の答え（解答冊子の答え）を送ってね。\n" +
-        "もし無いなら「答えなし」と送ってね。\n" +
+        "この問題の公式の答え（問題集・プリントの答え）を送ってね。\n\n" +
+        "手元になければ「答えなし」と送ってね。\n" +
         "その場合は、くまお先生が代わりに解くよ🔥",
     });
   }
 
-  /* テキスト */
+  /* -------- テキスト -------- */
   if (event.message.type === "text") {
     const text = event.message.text.trim();
 
     /* 挨拶 → メニュー */
-    if (["こんにちは", "おはよう", "やあ", "はじめまして"].includes(text)) {
+    if (["こんにちは", "やあ", "はじめまして"].includes(text)) {
       return replyMenu(event.replyToken);
     }
 
-    /* 画像答え → 本解説 */
+    /* 画像の答え待ち */
     if (userState[userId]?.mode === "waiting_answer") {
       const imageId = userState[userId].imageId;
       userState[userId] = null;
@@ -93,48 +94,44 @@ async function handleEvent(event) {
 
       try {
         const base64 = await getImageBase64(imageId);
-        let explanation = await runVisionQuestionMode(base64, officialAnswer);
-
-        explanation = cleanText(explanation); // 🧹禁止記号フィルター
+        const raw = await runVisionQuestionMode(base64, officialAnswer);
+        const clean = sanitizeOutput(raw);
 
         return client.replyMessage(event.replyToken, {
           type: "text",
-          text: explanation,
+          text: clean,
         });
-      } catch (err) {
-        console.error("Vision Error:", err);
+      } catch (e) {
+        console.error(e);
         return client.replyMessage(event.replyToken, {
           type: "text",
-          text: "画像処理中にエラーが出ちゃった🙏 もう一度送ってね！",
+          text: "画像処理でエラーが出たよ🙏 もう一度送ってね。",
         });
       }
     }
 
-    /* 質問モードに入る */
-    if (text === "①" || text === "質問") {
+    /* 質問モード開始 */
+    if (text === "①" || text === "質問" || text === "質問がしたい") {
       userState[userId] = { mode: "question_text" };
-
       return client.replyMessage(event.replyToken, {
         type: "text",
         text:
-          "OK！質問モードだよ🐻✨\n\n" +
+          "質問モードだよ🐻✨\n\n" +
           "・文章で質問\n" +
           "・画像で送る\n\n" +
           "どちらでも大丈夫だよ！",
       });
     }
 
-    /* 文章質問 → GPT */
+    /* 文章質問 */
     if (userState[userId]?.mode === "question_text") {
       userState[userId] = null;
-
-      let answer = await runTextQuestionMode(text);
-
-      answer = cleanText(answer); // 🧹禁止記号フィルター
+      const raw = await runTextQuestionMode(text);
+      const clean = sanitizeOutput(raw);
 
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: answer,
+        text: clean,
       });
     }
 
@@ -143,40 +140,40 @@ async function handleEvent(event) {
 }
 
 /* =====================
-   Vision（画像質問）
+   Vision 質問
 ===================== */
 async function runVisionQuestionMode(imageBase64, officialAnswer) {
-  const prompt = `
+  const systemPrompt = `
 あなたは「くまお先生」です。明るく優しく、中高生に寄り添って説明します。
 
-【書式ルール】
-・Markdown 記号は禁止（*, **, _, __, ~~ など）
-・LaTeX（\\(...\\)、\\[...\\]、$...$）は禁止
-・太字や強調は禁止
-・使ってよい記号は「・」のみ
-・数式は日本語で説明（例：x^3 → x の 3 乗）
-・ChatGPT っぽい文章は禁止。自然な日本語にする
-・文は短く、板書みたいに読みやすく
+書式ルール
+・Markdown 記号は禁止
+・LaTeX 記号は禁止
+・強調、太字、装飾は禁止
+・使ってよい装飾は「・」のみ
+・数式は日本語で説明
+・文は短く、板書のように
 
-【解答形式】
+構成
 1. 問題の要点
-2. 解き方（ステップ1 → 2 → 3）
+2. 解き方（ステップ形式）
 3. 解説
 4. 答え
-最後は必ず「このページ、ノートに写しておくと復習しやすいよ🐻✨」
+
+最後に必ず
+このページ、ノートに写しておくと復習しやすいよ🐻✨
 `;
 
   const messages = [
-    { role: "system", content: prompt },
+    { role: "system", content: systemPrompt },
     {
       role: "user",
       content: [
         {
           type: "text",
-          text:
-            officialAnswer
-              ? `公式の答えは「${officialAnswer}」。これを基準に説明してね。`
-              : "公式の答えはありません。自分で解いて説明してね。",
+          text: officialAnswer
+            ? `公式の答えは「${officialAnswer}」です。これを基準に説明してください。`
+            : "公式の答えはありません。問題を解いて説明してください。",
         },
         {
           type: "image_url",
@@ -193,26 +190,35 @@ async function runVisionQuestionMode(imageBase64, officialAnswer) {
    文章質問
 ===================== */
 async function runTextQuestionMode(text) {
-  const prompt = `
-あなたは「くまお先生」。優しく明るく説明します。
+  const systemPrompt = `
+あなたは「くまお先生」です。
 
-【形式】
+書式ルール
+・Markdown、LaTeX、強調は禁止
+・使ってよい装飾は「・」のみ
+・数式は日本語で説明
+・短文で板書風に
+
+構成
 1. 問題の要点
-2. 解き方（ステップ1 → ステップ2 → ステップ3）
+2. 解き方
 3. 解説
 4. 答え
 
-最後に「このページ、ノートに写しておくと復習しやすいよ🐻✨」
+最後に必ず
+このページ、ノートに写しておくと復習しやすいよ🐻✨
 `;
 
-  return await callOpenAI([
-    { role: "system", content: prompt },
+  const messages = [
+    { role: "system", content: systemPrompt },
     { role: "user", content: text },
-  ]);
+  ];
+
+  return await callOpenAI(messages);
 }
 
 /* =====================
-   OpenAI 呼び出し
+   OpenAI
 ===================== */
 async function callOpenAI(messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -228,29 +234,22 @@ async function callOpenAI(messages) {
   });
 
   const json = await res.json();
-  return cleanText(json.choices[0].message.content); // ←最後に必ずフィルター
+  return json.choices[0].message.content;
 }
 
 /* =====================
    禁止記号フィルター
 ===================== */
-function cleanText(text) {
+function sanitizeOutput(text) {
   return text
-    .replace(/\*\*/g, "")
-    .replace(/\*/g, "")
-    .replace(/__/g, "")
-    .replace(/_/g, "")
-    .replace(/~~/g, "")
-    .replace(/\$/g, "")
-    .replace(/\\\(/g, "")
-    .replace(/\\\)/g, "")
-    .replace(/\\\[/g, "")
-    .replace(/\\\]/g, "")
+    .replace(/[*_~`$]/g, "")
+    .replace(/\\\(|\\\)|\\\[|\\\]/g, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
 /* =====================
-   画像 → base64
+   LINE画像取得
 ===================== */
 async function getImageBase64(messageId) {
   const res = await fetch(
@@ -272,8 +271,7 @@ function replyMenu(replyToken) {
     text:
       "こんにちは🐻✨\n\n" +
       "今日は何をする？\n" +
-      "① 質問がしたい\n" +
-      "（講義・演習は準備中だよ）",
+      "① 質問がしたい ✏️",
   });
 }
 
@@ -281,4 +279,6 @@ function replyMenu(replyToken) {
    起動
 ===================== */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🐻🔥 質問モード 完成版 起動！"));
+app.listen(PORT, () => {
+  console.log("🐻✨ 禁止記号フィルター完全統合版 起動！");
+});
