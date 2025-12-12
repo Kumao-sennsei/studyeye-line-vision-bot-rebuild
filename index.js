@@ -14,6 +14,9 @@ const client = new Client({
   channelAccessToken: CHANNEL_ACCESS_TOKEN,
 });
 
+// ---- 簡易メモリ（本当は DB 推奨） ----
+const userState = {};   // userId → { mode: "question" | "lecture" | "exercise" | "chat" }
+
 /* =====================
   Webhook
 ===================== */
@@ -34,106 +37,126 @@ app.post(
   async (req, res) => {
     try {
       await Promise.all(req.body.events.map(handleEvent));
-      res.status(200).end(); // ← これがないと 502 エラーになる
+      res.status(200).end();
     } catch (err) {
       console.error(err);
-      res.status(200).end(); // ← 失敗しても必ず200返す
+      res.status(200).end();
     }
   }
 );
 
 /* =====================
-  メイン処理（メニュー → ①②③④）
+  メイン処理
 ===================== */
 async function handleEvent(event) {
   if (event.type !== "message") return;
 
-  if (event.message.type === "text") {
-    const text = event.message.text.trim();
+  const userId = event.source.userId;
+  if (!userState[userId]) userState[userId] = { mode: null };
 
-    /* ---------- 初回メニュー ---------- */
-    if (
-      text === "こんにちは" ||
-      text === "はじめまして" ||
-      text === "メニュー"
-    ) {
-      return replyMenu(event.replyToken);
-    }
+  const mode = userState[userId].mode;
+  const text = event.message.text.trim();
 
-    /* ---------- ① 質問 ---------- */
-    if (text.startsWith("①")) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "いいね！質問モードだよ🐻✨\n\n" +
-          "・問題文を送る\n" +
-          "・写真を送る\n" +
-          "・文章で質問する\n\n" +
-          "好きな形で送ってね！",
-      });
-    }
-
-    /* ---------- ② 講義 ---------- */
-    if (text.startsWith("②")) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "了解！講義モード📘✨\n\n" +
-          "🔸 教科（例：数学、物理、化学）\n" +
-          "🔸 単元（例：2次関数、電磁気、酸化還元）\n\n" +
-          "この2つを教えてね！",
-      });
-    }
-
-    /* ---------- 科目＋単元が送られてきたら講義開始 ---------- */
-    if (text.includes(" ") && text.split(" ").length === 2) {
-      const [subject, unit] = text.split(" ");
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          `了解！講義を始めるよ📘✨\n\n` +
-          `【教科】${subject}\n【単元】${unit}\n\n` +
-          `まずは基礎から説明するね。\n（ここに後で本物の講義ロジックを入れる）`,
-      });
-    }
-
-    /* ---------- ③ 演習 ---------- */
-    if (text.startsWith("③")) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "演習モードだね🔥📝\n\n" +
-          "🔸 教科（数学 / 物理 / 化学 など）\n" +
-          "🔸 レベル（基礎 / 標準 / 難関）\n\n" +
-          "この2つを教えてくれたら問題を出すね！",
-      });
-    }
-
-    /* ----- 演習の形式： '数学 基礎' のような2語 ----- */
-    if (text.includes(" ") && text.split(" ").length === 2) {
-      const [subject, level] = text.split(" ");
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          `OK！演習モード開始🔥\n\n` +
-          `【教科】${subject}\n【レベル】${level}\n\n` +
-          `第1問いくよ！\n（ここに後で演習問題ロジックを入れる）`,
-      });
-    }
-
-    /* ---------- ④ 雑談 ---------- */
-    if (text.startsWith("④")) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "雑談モードだよ☕✨\n\nなんでも話してね！",
-      });
-    }
-
-    /* ---------- どれでもない → メニュー ---------- */
+  /* ====== メニュー表示ワード ====== */
+  if (["こんにちは", "メニュー", "はじめまして"].includes(text)) {
+    userState[userId].mode = null;
     return replyMenu(event.replyToken);
   }
+
+  /* ====== ① 質問モード ====== */
+  if (text.startsWith("①")) {
+    userState[userId].mode = "question";
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "いいね！質問モードだよ🐻✨\n\n" +
+        "・問題文を送る\n" +
+        "・写真を送る\n" +
+        "・文章で質問する\n\n" +
+        "好きな形で送ってね！",
+    });
+  }
+
+  // 質問 → AI に質問を渡して解説させる（後で Vision も追加できる）
+  if (mode === "question") {
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: `その質問に答えるね✨\n\n（ここに OpenAI の回答を later で追加）\n\nあなたの質問：${text}`,
+    });
+  }
+
+  /* ====== ② 講義モード ====== */
+  if (text.startsWith("②")) {
+    userState[userId].mode = "lecture";
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "了解！講義モード📘✨\n\n" +
+        "🔸 教科（例：数学、物理、化学）\n" +
+        "🔸 単元（例：2次関数、電磁気、酸化還元）\n\n" +
+        "この2つをスペース区切りで送ってね！\n例）数学 2次関数",
+    });
+  }
+
+  if (mode === "lecture" && text.includes(" ")) {
+    const [subject, unit] = text.split(" ");
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        `講義を始めるよ📘✨\n\n` +
+        `【教科】${subject}\n【単元】${unit}\n\n` +
+        `まずは基礎から説明するね！\n（ここに講義ロジックを追加予定）`,
+    });
+  }
+
+  /* ====== ③ 演習モード ====== */
+  if (text.startsWith("③")) {
+    userState[userId].mode = "exercise";
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "演習モードだね🔥📝\n\n" +
+        "🔸 教科（数学 / 物理 / 化学 など）\n" +
+        "🔸 レベル（基礎 / 標準 / 難関）\n\n" +
+        "例）数学 基礎",
+    });
+  }
+
+  if (mode === "exercise" && text.includes(" ")) {
+    const [subject, level] = text.split(" ");
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        `OK！演習開始🔥\n\n` +
+        `【教科】${subject}\n【レベル】${level}\n\n` +
+        `第1問いくよ！\n（ここで後で問題を出す機能を入れる）`,
+    });
+  }
+
+  /* ====== ④ 雑談 ====== */
+  if (text.startsWith("④")) {
+    userState[userId].mode = "chat";
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: "雑談モードだよ☕✨\n\nなんでも話してね！",
+    });
+  }
+
+  if (mode === "chat") {
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: `いいね、その話もっと聞かせて☕✨\n\n→ ${text}`,
+    });
+  }
+
+  /* ====== どれでもなければメニュー ====== */
+  return replyMenu(event.replyToken);
 }
 
 /* =====================
