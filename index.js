@@ -22,12 +22,6 @@ const client = new Client({
 /* =====================
    ユーザー状態
 ===================== */
-// mode:
-// question_text
-// waiting_answer
-// after_question
-// exercise_question
-// exercise_waiting_answer
 const userState = {};
 
 /* =====================
@@ -64,7 +58,7 @@ async function handleEvent(event) {
   const userId = event.source.userId;
 
   /* ---------- 画像 ---------- */
-  if (event.message.type === "image") {
+  if (event.message?.type === "image") {
     userState[userId] = {
       mode: "waiting_answer",
       imageId: event.message.id,
@@ -74,21 +68,19 @@ async function handleEvent(event) {
       type: "text",
       text:
         "画像を受け取ったよ🐻✨\n\n" +
-        "この問題の公式の答え（問題集やプリントの答え）を送ってね。\n" +
-        "なければ「答えなし」で大丈夫だよ。",
+        "この問題の公式の答えを送ってね。\n" +
+        "なければ「答えなし」でOKだよ。",
     });
   }
 
   /* ---------- テキスト ---------- */
-  if (event.message.type !== "text") return;
+  if (event.message?.type !== "text") return;
   const text = event.message.text.trim();
 
-  /* =====================
-     画像の答え待ち
-  ===================== */
+  /* 画像の答え待ち */
   if (userState[userId]?.mode === "waiting_answer") {
     const imageId = userState[userId].imageId;
-    userState[userId] = { mode: "after_question" };
+    userState[userId].mode = "after_question";
 
     const officialAnswer =
       text === "答えなし" || text === "なし" ? null : text;
@@ -96,138 +88,42 @@ async function handleEvent(event) {
     const base64 = await getImageBase64(imageId);
     const result = await runVisionQuestionMode(base64, officialAnswer);
 
+    userState[userId].lastQuestionSummary = result;
+
     return client.replyMessage(event.replyToken, {
       type: "text",
       text: result,
     });
   }
 
-  /* =====================
-     解説後の分岐（ここが修正点）
-  ===================== */
+  /* 解説後の分岐 */
   if (userState[userId]?.mode === "after_question") {
-    // 類題へ
     if (text.includes("類題") || text.includes("練習")) {
-      userState[userId] = { mode: "exercise_question" };
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "いいね🐻🔥\n" +
-          "じゃあ演習モードに進もう。\n" +
-          "このあと、同じ構造で数字だけ変えた問題を出すよ。",
-      });
+      userState[userId].mode = "exercise_question";
+      return handleExerciseQuestion(event);
     }
 
-    // そのまま別の質問を続ける
-    if (text.endsWith("？") || text.endsWith("?") || text.includes("とは")) {
-      userState[userId] = { mode: "question_text" };
-      const result = await runTextQuestionMode(text);
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: result,
-      });
-    }
-
-    // 迷っている場合のガイド
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "もう一度聞きたいことがあれば、そのまま質問してね🐻✨\n" +
-        "それとも、類題を解いてみる？",
-    });
+    // ほかの質問 → 質問モードに戻す
+    userState[userId].mode = "question_text";
   }
 
-  /* =====================
-     演習モード：類題出題
-  ===================== */
-  if (userState[userId]?.mode === "exercise_question") {
-    userState[userId].mode = "exercise_waiting_answer";
-
-    const exercisePrompt = `
-あなたは「くまお先生」。
-直前に解説した問題と同じ構造で、
-数字だけを変えた類題を1問作ってください。
-
-必ず守ること
-・問題の型や文章構造は変えない
-・登場する数値だけを変更する
-・途中の解説や答えは書かない
-・中学生が読める日本語
-
-問題文だけを書いてください。
-`;
-
-    const question = await callOpenAI([
-      { role: "system", content: exercisePrompt },
-    ]);
-
-    userState[userId].exerciseQuestion = question;
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "類題いくよ🐻🔥\n\n" +
-        question +
-        "\n\n答えだけ送っても大丈夫だよ。",
-    });
-  }
-
-  /* =====================
-     演習モード：解答判定
-  ===================== */
-  if (userState[userId]?.mode === "exercise_waiting_answer") {
-    const userAnswer = text;
-    const question = userState[userId].exerciseQuestion;
-
-    const judgePrompt = `
-次の問題と生徒の答えを見て正誤だけ判断してください。
-
-正解なら「正解」
-違うなら「不正解」
-
-問題：
-${question}
-
-生徒の答え：
-${userAnswer}
-`;
-
-    const judge = await callOpenAI([
-      { role: "system", content: judgePrompt },
-    ]);
-
-    userState[userId] = { mode: "after_question" };
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: judge.includes("正解")
-        ? "いいね！その答えで合ってるよ🐻✨\n\nほかにも聞く？それとも類題を続ける？"
-        : "惜しいところまで来てるよ🐻✨\n\nもう一度考える？それとも質問に戻る？",
-    });
-  }
-
-  /* =====================
-     質問モード開始
-  ===================== */
+  /* 質問モード開始 */
   if (text === "①" || text === "質問") {
     userState[userId] = { mode: "question_text" };
     return client.replyMessage(event.replyToken, {
       type: "text",
       text:
-        "質問モードだよ🐻✨\n" +
-        "文章でそのまま質問してね。\n" +
-        "画像でもOKだよ。",
+        "質問モードだよ🐻✨\n\n" +
+        "文章で質問してもいいし、\n" +
+        "画像を送ってもOKだよ。",
     });
   }
 
-  /* =====================
-     文章質問
-  ===================== */
+  /* 文章質問 */
   if (userState[userId]?.mode === "question_text") {
-    userState[userId] = { mode: "after_question" };
+    userState[userId].mode = "after_question";
     const result = await runTextQuestionMode(text);
+    userState[userId].lastQuestionSummary = result;
 
     return client.replyMessage(event.replyToken, {
       type: "text",
@@ -240,14 +136,80 @@ ${userAnswer}
 }
 
 /* =====================
-   Vision 質問
+   演習モード：類題出題
+===================== */
+async function handleExerciseQuestion(event) {
+  const userId = event.source.userId;
+
+  const classifyPrompt = `
+次の問題は計算構造がありますか？
+「はい」か「いいえ」だけで答えてください。
+
+判断基準：
+・数式や計算が中心 → はい
+・人物名や用語を答える → いいえ
+
+問題：
+${userState[userId].lastQuestionSummary}
+`;
+
+  const classify = await callOpenAI([
+    { role: "system", content: classifyPrompt },
+  ]);
+
+  let exercisePrompt = "";
+
+  if (classify.includes("はい")) {
+    exercisePrompt = `
+あなたは演習問題を作る先生です。
+直前の問題と同じ式の形、同じ解き方を使います。
+変えてよいのは数字だけです。
+文字、構造、問い方は変えてはいけません。
+途中の説明は書かず、問題文だけを書いてください。
+`;
+  } else {
+    exercisePrompt = `
+あなたは演習問題を作る先生です。
+直前の問題と同じ時代、同じテーマ、同じ問い方を使います。
+人物名、場所名、出来事のうち一つだけを入れ替えてください。
+計算問題や文章題に変えてはいけません。
+問題文だけを書いてください。
+`;
+  }
+
+  const question = await callOpenAI([
+    { role: "system", content: exercisePrompt },
+    { role: "user", content: "類題を1問出してください。" },
+  ]);
+
+  userState[userId].mode = "exercise_waiting_answer";
+  userState[userId].exerciseQuestion = question;
+
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text:
+      "いいね🐻🔥\n\n" +
+      question +
+      "\n\n答えだけ送っても大丈夫だよ。",
+  });
+}
+
+/* =====================
+   Vision質問
 ===================== */
 async function runVisionQuestionMode(imageBase64, officialAnswer) {
   const prompt = `
 あなたは「くまお先生」。
-やさしく、板書するように説明してください。
+中学生にもわかるように、やさしく説明する先生です。
 
-構成
+必ず守ること：
+・Markdown禁止
+・LaTeX禁止
+・装飾禁止
+・難しい言葉禁止
+・同じ式を何度も書かない
+
+構成：
 【問題の要点】
 【解き方】
 1⃣
@@ -257,8 +219,8 @@ async function runVisionQuestionMode(imageBase64, officialAnswer) {
 【答え】
 
 最後に
-「ほかに聞きたい？それともこの問題の類題を解いてみる？」
-と書く
+ほかに聞きたいことある？
+それともこの問題の類題を解いてみる？
 `;
 
   return callOpenAI([
@@ -269,8 +231,8 @@ async function runVisionQuestionMode(imageBase64, officialAnswer) {
         {
           type: "text",
           text: officialAnswer
-            ? `公式の答えは「${officialAnswer}」です。これを基準に説明してください。`
-            : "公式の答えはありません。自分で解いて説明してください。",
+            ? `公式の答えは「${officialAnswer}」です。`
+            : "公式の答えはありません。",
         },
         {
           type: "image_url",
@@ -288,6 +250,7 @@ async function runTextQuestionMode(text) {
   const prompt = `
 あなたは「くまお先生」。
 
+構成：
 【問題の要点】
 【解き方】
 1⃣
@@ -297,8 +260,8 @@ async function runTextQuestionMode(text) {
 【答え】
 
 最後に
-「ほかに聞きたい？それともこの問題の類題を解いてみる？」
-と書く
+ほかに聞きたいことある？
+それともこの問題の類題を解いてみる？
 `;
 
   return callOpenAI([
@@ -359,5 +322,5 @@ function replyMenu(replyToken) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 質問・演習モード 完全版 起動！");
+  console.log("🐻✨ 質問＋演習モード 完全体 起動！");
 });
