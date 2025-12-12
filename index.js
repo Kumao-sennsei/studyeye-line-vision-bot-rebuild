@@ -22,6 +22,7 @@ const client = new Client({
 /* =====================
    ユーザー状態
 ===================== */
+// userState[userId] = { mode, imageId }
 const userState = {};
 
 /* =====================
@@ -56,9 +57,12 @@ app.post(
    メイン処理
 ===================== */
 async function handleEvent(event) {
+  if (event.type !== "message") return;
   const userId = event.source.userId;
 
-  /* ---------- 画像 ---------- */
+  /* --------------------
+     画像が来たら答え待ち
+  -------------------- */
   if (event.message.type === "image") {
     userState[userId] = {
       mode: "waiting_answer",
@@ -70,115 +74,137 @@ async function handleEvent(event) {
       text:
         "画像を受け取ったよ🐻✨\n\n" +
         "この問題の公式の答え（問題集やプリントの答え）を送ってね。\n" +
-        "なければ「答えなし」でOKだよ。",
+        "もし無ければ「答えなし」と送ってくれたら、くまお先生が解くよ🔥",
     });
   }
 
-  /* ---------- テキスト ---------- */
-  if (event.message.type === "text") {
-    const text = event.message.text.trim();
+  /* --------------------
+     テキスト処理
+  -------------------- */
+  if (event.message.type !== "text") return;
+  const text = event.message.text.trim();
 
-    /* あいさつ */
-    if (["こんにちは", "やあ", "はじめまして"].includes(text)) {
-      return replyMenu(event.replyToken);
-    }
-
-    /* 公式答え待ち */
-    if (userState[userId]?.mode === "waiting_answer") {
-      const imageId = userState[userId].imageId;
-      userState[userId] = null;
-
-      const officialAnswer =
-        text === "答えなし" || text === "なし" ? null : text;
-
-      const base64 = await getImageBase64(imageId);
-      const result = await runVisionQuestionMode(base64, officialAnswer);
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: sanitizeOutput(result),
-      });
-    }
-
-    /* 質問モード */
-    if (text === "①" || text === "質問") {
-      userState[userId] = { mode: "question_text" };
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "質問モードだよ🐻✨\n" +
-          "文章でも画像でも送ってね。",
-      });
-    }
-
-    /* 文章質問 */
-    if (userState[userId]?.mode === "question_text") {
-      userState[userId] = null;
-      const result = await runTextQuestionMode(text);
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: sanitizeOutput(result),
-      });
-    }
-
+  /* あいさつ */
+  if (["こんにちは", "はじめまして", "やあ"].includes(text)) {
     return replyMenu(event.replyToken);
   }
+
+  /* 質問モードに入る */
+  if (text === "①" || text === "質問" || text === "質問がしたい") {
+    userState[userId] = { mode: "question_text" };
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "質問モードだよ🐻✨\n" +
+        "文章で質問してもいいし、画像を送ってもOKだよ。",
+    });
+  }
+
+  /* 画像の公式答えを受け取る */
+  if (userState[userId]?.mode === "waiting_answer") {
+    const imageId = userState[userId].imageId;
+    userState[userId] = null;
+
+    const officialAnswer =
+      text === "答えなし" || text === "なし" ? null : text;
+
+    try {
+      const base64 = await getImageBase64(imageId);
+      let explanation = await runVisionQuestionMode(
+        base64,
+        officialAnswer
+      );
+
+      explanation = sanitizeOutput(explanation);
+
+      await client.replyMessage(event.replyToken, {
+        type: "text",
+        text: explanation,
+      });
+
+      return followUp(event.replyToken);
+    } catch (err) {
+      console.error(err);
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "ごめんね、画像の処理でエラーが出たみたい🙏 もう一度送ってね。",
+      });
+    }
+  }
+
+  /* 文章質問 */
+  if (userState[userId]?.mode === "question_text") {
+    userState[userId] = null;
+
+    let answer = await runTextQuestionMode(text);
+    answer = sanitizeOutput(answer);
+
+    await client.replyMessage(event.replyToken, {
+      type: "text",
+      text: answer,
+    });
+
+    return followUp(event.replyToken);
+  }
+
+  return replyMenu(event.replyToken);
 }
 
 /* =====================
-   Vision 質問
+   画像質問 GPT
 ===================== */
 async function runVisionQuestionMode(imageBase64, officialAnswer) {
-  const systemPrompt = `
+  const prompt = `
 あなたは「くまお先生」です。
 明るく優しく、中高生に寄り添って説明します。
 
 【絶対ルール】
-・Markdown記号は禁止
-・LaTeXは禁止
-・太字、強調、装飾は禁止
-・使ってよい装飾は「・」のみ
+・Markdown 記号は禁止
+・LaTeX 記号は禁止
+・強調記号は禁止
 ・数式は日本語で説明
 ・文は短く、板書のように
 
 【構成】
 1. 問題の要点
-2. 解き方
+2. 解き方（ステップ形式）
 3. 解説
 4. 答え
 
-最後は必ず：
+最後に必ず：
 このページ、ノートに写しておくと復習しやすいよ🐻✨
 `;
 
-  const userText = officialAnswer
-    ? `公式の答えは「${officialAnswer}」です。これを基準に説明してください。`
-    : "公式の答えはありません。問題を解いて説明してください。";
-
-  return await callOpenAI([
-    { role: "system", content: systemPrompt },
+  const messages = [
+    { role: "system", content: prompt },
     {
       role: "user",
       content: [
-        { type: "text", text: userText },
+        {
+          type: "text",
+          text: officialAnswer
+            ? `公式の答えは「${officialAnswer}」です。これを基準に説明してください。`
+            : "公式の答えはありません。問題を解いて説明してください。",
+        },
         {
           type: "image_url",
           image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
         },
       ],
     },
-  ]);
+  ];
+
+  return await callOpenAI(messages, "gpt-4.1");
 }
 
 /* =====================
-   文章質問
+   文章質問 GPT
 ===================== */
 async function runTextQuestionMode(text) {
   const prompt = `
 あなたは「くまお先生」です。
+やさしく丁寧に説明します。
 
-【構成】
 1. 問題の要点
 2. 解き方
 3. 解説
@@ -188,16 +214,19 @@ async function runTextQuestionMode(text) {
 このページ、ノートに写しておくと復習しやすいよ🐻✨
 `;
 
-  return await callOpenAI([
-    { role: "system", content: prompt },
-    { role: "user", content: text },
-  ]);
+  return await callOpenAI(
+    [
+      { role: "system", content: prompt },
+      { role: "user", content: text },
+    ],
+    "gpt-4o"
+  );
 }
 
 /* =====================
-   OpenAI 呼び出し
+   OpenAI 共通
 ===================== */
-async function callOpenAI(messages) {
+async function callOpenAI(messages, model) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -205,7 +234,7 @@ async function callOpenAI(messages) {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4.1",
+      model,
       messages,
     }),
   });
@@ -215,26 +244,26 @@ async function callOpenAI(messages) {
 }
 
 /* =====================
-   禁止記号フィルター（最重要）
+   禁止記号フィルター
 ===================== */
 function sanitizeOutput(text) {
   return text
-    .replace(/\*\*|\*|__|_|~~/g, "")
-    .replace(/\\\(|\\\)|\\\[|\\\]|\$/g, "")
-    .replace(/#+/g, "")
-    .trim();
+    .replace(/[*_~`]/g, "")
+    .replace(/\\[()[\]$]/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/__/g, "");
 }
 
 /* =====================
-   LINE画像取得
+   フォローアップ会話
 ===================== */
-async function getImageBase64(messageId) {
-  const res = await fetch(
-    `https://api-data.line.me/v2/bot/message/${messageId}/content`,
-    { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } }
-  );
-  const buffer = await res.arrayBuffer();
-  return Buffer.from(buffer).toString("base64");
+function followUp(replyToken) {
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text:
+      "ほかにも聞きたいことある？🐻✨\n" +
+      "それとも、この問題の類題を解いてみる？",
+  });
 }
 
 /* =====================
@@ -244,10 +273,23 @@ function replyMenu(replyToken) {
   return client.replyMessage(replyToken, {
     type: "text",
     text:
-      "こんにちは🐻✨\n\n" +
-      "今日は何をする？\n" +
-      "① 質問がしたい ✏️",
+      "こんにちは🐻✨\n" +
+      "① 質問がしたい",
   });
+}
+
+/* =====================
+   画像取得
+===================== */
+async function getImageBase64(messageId) {
+  const res = await fetch(
+    `https://api-data.line.me/v2/bot/message/${messageId}/content`,
+    {
+      headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
+    }
+  );
+  const buffer = await res.arrayBuffer();
+  return Buffer.from(buffer).toString("base64");
 }
 
 /* =====================
@@ -255,5 +297,5 @@ function replyMenu(replyToken) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 禁止記号フィルター完全版 起動！");
+  console.log("🐻✨ 質問モード完全体 起動！");
 });
