@@ -22,7 +22,6 @@ const client = new Client({
 /* =====================
    ユーザー状態
 ===================== */
-// userState[userId] = { mode, imageId }
 const userState = {};
 
 /* =====================
@@ -36,6 +35,7 @@ app.post(
         .createHmac("SHA256", CHANNEL_SECRET)
         .update(buf)
         .digest("base64");
+
       if (signature !== req.headers["x-line-signature"]) {
         throw new Error("Invalid signature");
       }
@@ -45,8 +45,8 @@ app.post(
     try {
       await Promise.all(req.body.events.map(handleEvent));
       res.status(200).end();
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error(err);
       res.status(200).end();
     }
   }
@@ -70,7 +70,7 @@ async function handleEvent(event) {
       text:
         "画像を受け取ったよ🐻✨\n\n" +
         "この問題の公式の答え（問題集やプリントの答え）を送ってね。\n" +
-        "もし無ければ「答えなし」と送ってくれたら、くまお先生が代わりに解くよ。",
+        "なければ「答えなし」でOKだよ。",
     });
   }
 
@@ -78,7 +78,7 @@ async function handleEvent(event) {
   if (event.message.type === "text") {
     const text = event.message.text.trim();
 
-    /* 挨拶 */
+    /* あいさつ */
     if (["こんにちは", "やあ", "はじめまして"].includes(text)) {
       return replyMenu(event.replyToken);
     }
@@ -92,13 +92,11 @@ async function handleEvent(event) {
         text === "答えなし" || text === "なし" ? null : text;
 
       const base64 = await getImageBase64(imageId);
-
-      const raw = await runVisionInternal(base64, officialAnswer);
-      const safe = sanitizeOutput(raw);
+      const result = await runVisionQuestionMode(base64, officialAnswer);
 
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: safe,
+        text: sanitizeOutput(result),
       });
     }
 
@@ -108,20 +106,19 @@ async function handleEvent(event) {
       return client.replyMessage(event.replyToken, {
         type: "text",
         text:
-          "質問モードだよ🐻✨\n\n" +
-          "文章で質問してもいいし、画像を送ってもOKだよ。",
+          "質問モードだよ🐻✨\n" +
+          "文章でも画像でも送ってね。",
       });
     }
 
+    /* 文章質問 */
     if (userState[userId]?.mode === "question_text") {
       userState[userId] = null;
-
-      const raw = await runTextInternal(text);
-      const safe = sanitizeOutput(raw);
+      const result = await runTextQuestionMode(text);
 
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: safe,
+        text: sanitizeOutput(result),
       });
     }
 
@@ -130,90 +127,75 @@ async function handleEvent(event) {
 }
 
 /* =====================
-   内部計算フェーズ（画像）
+   Vision 質問
 ===================== */
-async function runVisionInternal(imageBase64, officialAnswer) {
-  const messages = [
-    {
-      role: "system",
-      content:
-        "あなたは数学計算エンジン。正確な計算を最優先。説明不要。",
-    },
+async function runVisionQuestionMode(imageBase64, officialAnswer) {
+  const systemPrompt = `
+あなたは「くまお先生」です。
+明るく優しく、中高生に寄り添って説明します。
+
+【絶対ルール】
+・Markdown記号は禁止
+・LaTeXは禁止
+・太字、強調、装飾は禁止
+・使ってよい装飾は「・」のみ
+・数式は日本語で説明
+・文は短く、板書のように
+
+【構成】
+1. 問題の要点
+2. 解き方
+3. 解説
+4. 答え
+
+最後は必ず：
+このページ、ノートに写しておくと復習しやすいよ🐻✨
+`;
+
+  const userText = officialAnswer
+    ? `公式の答えは「${officialAnswer}」です。これを基準に説明してください。`
+    : "公式の答えはありません。問題を解いて説明してください。";
+
+  return await callOpenAI([
+    { role: "system", content: systemPrompt },
     {
       role: "user",
       content: [
-        {
-          type: "text",
-          text: officialAnswer
-            ? `公式の答えは ${officialAnswer}。それを基準に内部計算を行う。`
-            : "公式の答えは無い。問題を解いて正しい答えを出す。",
-        },
+        { type: "text", text: userText },
         {
           type: "image_url",
           image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
         },
       ],
     },
-  ];
-
-  const calculation = await callOpenAI(messages);
-
-  return await runDisplayTransform(calculation);
+  ]);
 }
 
 /* =====================
-   内部計算フェーズ（文章）
+   文章質問
 ===================== */
-async function runTextInternal(text) {
-  const messages = [
-    {
-      role: "system",
-      content:
-        "あなたは数学計算エンジン。正確な計算を最優先。説明不要。",
-    },
+async function runTextQuestionMode(text) {
+  const prompt = `
+あなたは「くまお先生」です。
+
+【構成】
+1. 問題の要点
+2. 解き方
+3. 解説
+4. 答え
+
+最後に：
+このページ、ノートに写しておくと復習しやすいよ🐻✨
+`;
+
+  return await callOpenAI([
+    { role: "system", content: prompt },
     { role: "user", content: text },
-  ];
-
-  const calculation = await callOpenAI(messages);
-
-  return await runDisplayTransform(calculation);
+  ]);
 }
 
 /* =====================
-   表示変換フェーズ
-===================== */
-async function runDisplayTransform(calculationText) {
-  const messages = [
-    {
-      role: "system",
-      content:
-        "あなたはくまお先生。中高生向けにやさしく板書風で説明する。",
-    },
-    {
-      role: "user",
-      content:
-        "以下の計算結果を、生徒向けに説明に直す。\n" +
-        "禁止事項：Markdown、記号装飾、LaTeX。\n\n" +
-        calculationText,
-    },
-  ];
-
-  return await callOpenAI(messages);
-}
-
-/* =====================
-   禁止記号フィルター
-===================== */
-function sanitizeOutput(text) {
-  return text
-    .replace(/[*_~`]/g, "")
-    .replace(/\\\[.*?\\\]/g, "")
-    .replace(/\\\(.*?\\\)/g, "")
-    .replace(/\$/g, "");
-}
-
-/* =====================
-   OpenAI 共通
+   OpenAI 呼び出し
 ===================== */
 async function callOpenAI(messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -233,14 +215,23 @@ async function callOpenAI(messages) {
 }
 
 /* =====================
+   禁止記号フィルター（最重要）
+===================== */
+function sanitizeOutput(text) {
+  return text
+    .replace(/\*\*|\*|__|_|~~/g, "")
+    .replace(/\\\(|\\\)|\\\[|\\\]|\$/g, "")
+    .replace(/#+/g, "")
+    .trim();
+}
+
+/* =====================
    LINE画像取得
 ===================== */
 async function getImageBase64(messageId) {
   const res = await fetch(
     `https://api-data.line.me/v2/bot/message/${messageId}/content`,
-    {
-      headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
-    }
+    { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } }
   );
   const buffer = await res.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
@@ -255,7 +246,7 @@ function replyMenu(replyToken) {
     text:
       "こんにちは🐻✨\n\n" +
       "今日は何をする？\n" +
-      "① 質問がしたい",
+      "① 質問がしたい ✏️",
   });
 }
 
@@ -264,5 +255,5 @@ function replyMenu(replyToken) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 禁止記号フィルター統合版 起動！");
+  console.log("🐻✨ 禁止記号フィルター完全版 起動！");
 });
