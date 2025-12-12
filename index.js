@@ -110,6 +110,85 @@ async function handleEvent(event) {
           "このあと、似た問題を出すよ。",
       });
     }
+/* =====================
+   演習モード：類題出題
+===================== */
+if (userState[userId]?.mode === "exercise_question") {
+  userState[userId].mode = "exercise_waiting_answer";
+
+  const exercisePrompt = `
+あなたは「くまお先生」。
+さっきの問題と同じ考え方で解ける、数字だけ変えた類題を1問作ってください。
+
+条件：
+・問題文は短く
+・途中の解説は書かない
+・答えはまだ書かない
+・中学生でも読める日本語
+`;
+
+  const question = await callOpenAI([
+    { role: "system", content: exercisePrompt },
+    { role: "user", content: "類題を1問出してください。" },
+  ]);
+
+  userState[userId].exerciseQuestion = question;
+
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text:
+      "いいね🐻🔥\n\n" +
+      question +
+      "\n\n答えだけ送っても大丈夫だよ。",
+  });
+}
+/* =====================
+   演習モード：解答判定
+===================== */
+if (userState[userId]?.mode === "exercise_waiting_answer") {
+  const userAnswer = text;
+  const question = userState[userId].exerciseQuestion;
+
+  const judgePrompt = `
+次の問題と生徒の答えを見て、正しいかどうかだけを判断してください。
+正解なら「正解」。
+違うなら「不正解」。
+理由や解説は書かない。
+
+問題：
+${question}
+
+生徒の答え：
+${userAnswer}
+`;
+
+  const judge = await callOpenAI([
+    { role: "system", content: judgePrompt },
+  ]);
+
+  let reply = "";
+
+  if (judge.includes("正解")) {
+    reply =
+      "いいね！その答えで合ってるよ🐻✨\n\n" +
+      "どうする？\n" +
+      "・もう1問、類題を解く\n" +
+      "・質問に戻る";
+  } else {
+    reply =
+      "惜しいところまで来てるよ🐻✨\n\n" +
+      "どうする？\n" +
+      "・もう一度考えてみる\n" +
+      "・質問に戻る";
+  }
+
+  userState[userId].mode = "after_question";
+
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text: reply,
+  });
+}
 
     // 普通の質問なら質問モード継続
     userState[userId] = { mode: "question_text" };
