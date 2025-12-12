@@ -1,8 +1,3 @@
-// ===============================
-// 質問モード 完全版 index.js
-// 禁止記号フィルター + 指数表示 + 会話遷移つき
-// ===============================
-
 import express from "express";
 import crypto from "crypto";
 import fetch from "node-fetch";
@@ -10,34 +5,17 @@ import { Client } from "@line/bot-sdk";
 
 const app = express();
 
-/* =====================
-   環境変数
-===================== */
 const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
 const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-/* =====================
-   LINE クライアント
-===================== */
 const client = new Client({
   channelAccessToken: CHANNEL_ACCESS_TOKEN,
 });
 
-/* =====================
-   ユーザー状態
-===================== */
-// mode:
-// idle
-// question_text
-// waiting_answer
-// after_answer
-// exercise_ready
+// userState[userId] = { mode, imageId }
 const userState = {};
 
-/* =====================
-   Webhook
-===================== */
 app.post(
   "/webhook",
   express.json({
@@ -52,23 +30,15 @@ app.post(
     },
   }),
   async (req, res) => {
-    try {
-      await Promise.all(req.body.events.map(handleEvent));
-      res.status(200).end();
-    } catch (e) {
-      console.error(e);
-      res.status(200).end();
-    }
+    await Promise.all(req.body.events.map(handleEvent));
+    res.status(200).end();
   }
 );
 
-/* =====================
-   メイン処理
-===================== */
 async function handleEvent(event) {
   const userId = event.source.userId;
 
-  // ---------- 画像 ----------
+  // 画像を受信
   if (event.message.type === "image") {
     userState[userId] = {
       mode: "waiting_answer",
@@ -78,142 +48,94 @@ async function handleEvent(event) {
     return client.replyMessage(event.replyToken, {
       type: "text",
       text:
-        "画像を受け取ったよ🐻✨\n\n" +
-        "この問題の公式の答え（問題集・プリントの答え）を送ってね。\n" +
-        "手元にない場合は「答えなし」と送ってくれたら、くまお先生が解くよ🔥",
+        "画像を受け取ったよ。\n" +
+        "この問題の公式の答えを送ってね。\n" +
+        "手元になければ「答えなし」でOK。",
     });
   }
 
-  // ---------- テキスト ----------
   if (event.message.type === "text") {
     const text = event.message.text.trim();
 
-    // 挨拶
-    if (["こんにちは", "はじめまして", "やあ"].includes(text)) {
-      userState[userId] = { mode: "idle" };
-      return replyMenu(event.replyToken);
-    }
-
-    // 質問モード開始
-    if (text === "①" || text === "質問がしたい") {
-      userState[userId] = { mode: "question_text" };
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "OK！質問モードだよ🐻✨\n\n" +
-          "・文章で質問してもOK\n" +
-          "・画像で送ってもOK\n\n" +
-          "好きな方法で聞いてね！",
-      });
-    }
-
-    // 画像の公式答え待ち
+    // 公式答え待ち
     if (userState[userId]?.mode === "waiting_answer") {
       const imageId = userState[userId].imageId;
-      userState[userId] = { mode: "after_answer" };
+      userState[userId] = null;
 
       const officialAnswer =
         text === "答えなし" || text === "なし" ? null : text;
 
       const base64 = await getImageBase64(imageId);
-      const raw = await runVisionQuestionMode(base64, officialAnswer);
-      const result = formatOutput(raw);
+      const result = await runVisionQuestion(base64, officialAnswer);
 
-      await client.replyMessage(event.replyToken, {
+      return client.replyMessage(event.replyToken, {
         type: "text",
         text: result,
       });
-
-      return followUp(userId, event.replyToken);
     }
 
-    // 文章質問
-    if (userState[userId]?.mode === "question_text") {
-      userState[userId] = { mode: "after_answer" };
-
-      const raw = await runTextQuestionMode(text);
-      const result = formatOutput(raw);
-
-      await client.replyMessage(event.replyToken, {
+    // 質問モード開始
+    if (text === "①" || text === "質問" || text === "質問がしたい") {
+      userState[userId] = { mode: "question" };
+      return client.replyMessage(event.replyToken, {
         type: "text",
-        text: result,
+        text:
+          "質問モードだよ。\n" +
+          "文章でも画像でも送ってね。",
       });
-
-      return followUp(userId, event.replyToken);
     }
 
-    // 解答後の会話
-    if (userState[userId]?.mode === "after_answer") {
-      if (text.includes("類題")) {
-        userState[userId] = { mode: "exercise_ready" };
-        return client.replyMessage(event.replyToken, {
-          type: "text",
-          text: "OK！類題に行こう🐻🔥\n次の問題を出すね！",
-        });
-      }
-
-      if (text.includes("他") || text.includes("質問")) {
-        userState[userId] = { mode: "question_text" };
-        return client.replyMessage(event.replyToken, {
-          type: "text",
-          text: "じゃあ、また質問してみよう🐻✨",
-        });
-      }
-
-      return followUp(userId, event.replyToken);
+    // 類題遷移（今回は案内だけ）
+    if (text.includes("類題")) {
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text:
+          "OK。\n" +
+          "ここから演習モードに進むよ。\n" +
+          "（演習モードは次の実装でつなぐ予定）",
+      });
     }
 
     return replyMenu(event.replyToken);
   }
 }
 
-/* =====================
-   フォローアップ
-===================== */
-function followUp(userId, replyToken) {
-  return client.replyMessage(replyToken, {
-    type: "text",
-    text:
-      "ほかに聞きたいことはある？😊\n" +
-      "それともこの問題の類題を解いてみる？🐻✨",
-  });
-}
+async function runVisionQuestion(imageBase64, officialAnswer) {
+  const systemPrompt = `
+あなたは「くまお先生」。
+中高生に教える先生。
 
-/* =====================
-   Vision 質問
-===================== */
-async function runVisionQuestionMode(imageBase64, officialAnswer) {
-  const prompt = `
-あなたは「くまお先生」です。
+次のルールを必ず守る。
 
-【絶対ルール】
-・Markdown禁止
-・LaTeX禁止
-・強調記号禁止
-・使ってよい装飾は「・」のみ
-・＋ − × ÷ ^ は使用OK
-・指数は x^2 の形で書く
-・文章は板書風で短く
+・Markdown記号は使わない
+・強調記号は使わない
+・数式は x² x³ のように表示する
+・同じ式を繰り返さない
+・途中計算は整理して書く
+・板書のように説明する
 
-【構成】
+構成は必ず次の順。
+
 問題の要点
-解き方（1⃣ 2⃣ 3⃣ 必要なら追加）
+解き方
 解説
 答え
-最後に一言
+
+最後に必ず質問する。
+ほかに聞きたい？
+それともこの問題の類題を解いてみる？
 `;
 
+  const userText = officialAnswer
+    ? `公式の答えは ${officialAnswer} です。これを基準に解説してください。`
+    : `公式の答えはありません。自分で解いて正しい答えを出してください。`;
+
   const messages = [
-    { role: "system", content: prompt },
+    { role: "system", content: systemPrompt },
     {
       role: "user",
       content: [
-        {
-          type: "text",
-          text: officialAnswer
-            ? `公式の答えは「${officialAnswer}」です。`
-            : "公式の答えはありません。",
-        },
+        { type: "text", text: userText },
         {
           type: "image_url",
           image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
@@ -222,42 +144,9 @@ async function runVisionQuestionMode(imageBase64, officialAnswer) {
     },
   ];
 
-  return callOpenAI(messages);
+  return await callOpenAI(messages);
 }
 
-/* =====================
-   文章質問
-===================== */
-async function runTextQuestionMode(text) {
-  const prompt = `
-あなたは「くまお先生」です。
-
-【ルール】
-・Markdown禁止
-・LaTeX禁止
-・指数は x^2 形式
-・＋ − × ÷ 使用OK
-・板書のように説明
-
-【構成】
-問題の要点
-解き方（番号つき）
-解説
-答え
-最後に一言
-`;
-
-  const messages = [
-    { role: "system", content: prompt },
-    { role: "user", content: text },
-  ];
-
-  return callOpenAI(messages);
-}
-
-/* =====================
-   OpenAI
-===================== */
 async function callOpenAI(messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -275,20 +164,6 @@ async function callOpenAI(messages) {
   return json.choices[0].message.content;
 }
 
-/* =====================
-   出力整形
-===================== */
-function formatOutput(text) {
-  return text
-    .replace(/\*\*|__|~~|`/g, "")
-    .replace(/\^2/g, "²")
-    .replace(/\^3/g, "³")
-    .replace(/\^4/g, "⁴");
-}
-
-/* =====================
-   LINE画像取得
-===================== */
 async function getImageBase64(messageId) {
   const res = await fetch(
     `https://api-data.line.me/v2/bot/message/${messageId}/content`,
@@ -300,22 +175,16 @@ async function getImageBase64(messageId) {
   return Buffer.from(buffer).toString("base64");
 }
 
-/* =====================
-   メニュー
-===================== */
 function replyMenu(replyToken) {
   return client.replyMessage(replyToken, {
     type: "text",
     text:
-      "こんにちは🐻✨\n\n" +
-      "① 質問がしたい\n",
+      "今日は何をする？\n" +
+      "① 質問がしたい",
   });
 }
 
-/* =====================
-   起動
-===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 質問モード 完全版 起動！");
+  console.log("質問モード 起動完了");
 });
