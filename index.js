@@ -67,26 +67,254 @@ async function handleEvent(event) {
     return replyMenu(event.replyToken);
   }
 
-  /* ============================================
-      状態①：質問モード
-  ============================================ */
-  if (text === "質問" || text === "①") {
-    userState[userId] = { mode: "question" };
+  import express from "express";
+import crypto from "crypto";
+import fetch from "node-fetch";
+import { Client } from "@line/bot-sdk";
+
+const app = express();
+
+/* =====================
+  環境変数
+===================== */
+const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
+const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+const client = new Client({
+  channelAccessToken: CHANNEL_ACCESS_TOKEN,
+});
+
+/* =====================
+  ユーザーステート
+===================== */
+const userState = {}; // userState[userId] = { mode: "question_text" }
+
+/* =====================
+  Webhook
+===================== */
+app.post(
+  "/webhook",
+  express.json({
+    verify: (req, res, buf) => {
+      const signature = crypto
+        .createHmac("SHA256", CHANNEL_SECRET)
+        .update(buf)
+        .digest("base64");
+      if (signature !== req.headers["x-line-signature"]) {
+        throw new Error("Invalid signature");
+      }
+    },
+  }),
+  async (req, res) => {
+    try {
+      await Promise.all(req.body.events.map(handleEvent));
+      res.status(200).end();
+    } catch (err) {
+      console.error("Webhook Error:", err);
+      res.status(200).end();
+    }
+  }
+);
+
+/* =====================
+  モデル自動選択
+===================== */
+function chooseModelByDifficulty(text) {
+  if (text.length < 30 && !/[XYZxyz]/.test(text)) {
+    return "gpt-4o-mini";
+  }
+
+  const hardKeywords = [
+    "微分",
+    "積分",
+    "証明",
+    "確率分布",
+    "極限",
+    "速度ベクトル",
+    "東大",
+    "京大",
+    "医学部",
+    "難問",
+  ];
+
+  if (hardKeywords.some((kw) => text.includes(kw))) {
+    return "gpt-4.1";
+  }
+
+  if (text.length > 50) return "gpt-4o";
+
+  return "gpt-4o";
+}
+
+/* =====================
+  GPT文章質問
+===================== */
+async function callTextAnswerFromOpenAI(text) {
+  const model = chooseModelByDifficulty(text);
+
+  const systemPrompt = `
+あなたは「くまお先生」です。
+明るくやさしい先輩のように、生徒を励ましながら丁寧に説明します🐻✨
+難しい内容は一段階ずつかみ砕いて話し、
+説明の最初には軽い励ましを入れてください。
+
+【問題の要点】
+【解き方】（ステップ形式）
+【解説】
+【答え】
+
+最後は必ず：
+「このページ、ノートに写しておくと復習しやすいよ🐻✨」
+`;
+
+  const userPrompt = `生徒の質問はこちら：\n${text}\n\n丁寧に説明してください。`;
+
+  try {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+      }),
+    });
+
+    if (!res.ok) {
+      console.error("OpenAI API Error:", await res.text());
+      return "ごめんね💦 ちょっと通信の調子が悪いみたい…もう一度送ってくれる？🐻✨";
+    }
+
+    const data = await res.json();
+    return (
+      data.choices?.[0]?.message?.content ||
+      "説明を取得できなかったよ💦 もう一度聞いてね🐻✨"
+    );
+  } catch (err) {
+    console.error("callTextAnswerFromOpenAI 例外:", err);
+    return "今ちょっと混み合ってるみたい💦 もう一度送ってみてね🐻✨";
+  }
+}
+
+/* =====================
+  文章分割
+===================== */
+function splitTextForLine(text, maxLength = 1100) {
+  const result = [];
+  let current = text;
+
+  while (current.length > maxLength) {
+    result.push(current.slice(0, maxLength));
+    current = current.slice(maxLength);
+  }
+
+  if (current.length > 0) result.push(current);
+
+  return result;
+}
+
+/* =====================
+  メイン処理
+===================== */
+async function handleEvent(event) {
+  if (event.type !== "message") return;
+  if (event.message.type !== "text") return;
+
+  const text = event.message.text.trim();
+  const userId = event.source.userId;
+
+  /* あいさつ → メニュー表示 */
+  if (["こんにちは", "やあ", "おはよう", "はじめまして"].includes(text)) {
+    return replyMenu(event.replyToken);
+  }
+
+  /* -------------------------------
+     ① 質問モードへ入る
+  ------------------------------- */
+  if (text === "①" || text === "質問" || text === "質問がしたい") {
+    userState[userId] = { mode: "question_text" };
 
     return client.replyMessage(event.replyToken, {
       type: "text",
       text:
-        "いいね！質問モードだよ🐻✨\n\n" +
-        "・問題文を送る\n" +
-        "・写真を送る（※画像モードは後で実装）\n" +
-        "・文章で質問する\n\n" +
-        "好きな形で送ってね！",
+        "いいね！質問モードに入ったよ🐻✨\n" +
+        "テキストで質問を送ってね！",
     });
   }
 
-  if (userState[userId]?.mode === "question") {
-    return handleQuestionMode(event, text);
+  /* -------------------------------
+     ② 質問モード本体
+  ------------------------------- */
+  if (userState[userId]?.mode === "question_text") {
+    try {
+      userState[userId] = null;
+
+      const answer = await callTextAnswerFromOpenAI(text);
+
+      const chunks = splitTextForLine(answer, 1100);
+
+      await client.replyMessage(
+        event.replyToken,
+        chunks.map((t) => ({ type: "text", text: t }))
+      );
+
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text:
+          "ほかにもやりたいことある？🐻✨\n\n" +
+          "① 質問がしたい ✏️\n" +
+          "② 講義を受けたい 📘\n" +
+          "③ 演習がしたい 📝\n" +
+          "④ 雑談したい ☕",
+      });
+    } catch (err) {
+      console.error("質問モード error:", err);
+
+      userState[userId] = null;
+
+      return client.replyMessage(event.replyToken, {
+        type: "text",
+        text: "ごめんね💦 ちょっと混んでるみたい…もう一度質問してみてね🐻✨",
+      });
+    }
   }
+
+  /* -------------------------------
+      その他 → メニュー返す
+  ------------------------------- */
+  return replyMenu(event.replyToken);
+}
+
+/* =====================
+  メニュー
+===================== */
+function replyMenu(replyToken) {
+  return client.replyMessage(replyToken, {
+    type: "text",
+    text:
+      "こんにちは🐻✨\n" +
+      "今日は何をする？\n\n" +
+      "① 質問がしたい ✏️\n" +
+      "② 講義を受けたい 📘\n" +
+      "③ 演習がしたい 📝\n" +
+      "④ 雑談したい ☕",
+  });
+}
+
+/* =====================
+  起動
+===================== */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("くまお先生（質問モード 完全体）起動中🐻✨");
+});
+
 
   /* ============================================
       状態②：講義モード（教科 → 単元 → 講義生成）
