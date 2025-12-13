@@ -20,17 +20,19 @@ const client = new Client({
 });
 
 /* =====================
-   ユーザー状態
+   ユーザー状態（超重要）
 ===================== */
 const userState = {};
-
 /*
-state:
-question_text
-waiting_answer
-after_question
-exercise_question
-exercise_waiting_answer
+mode:
+S0_question
+S1_explain_done
+S2_after_question
+S3_exercise_condition
+S4_exercise_question
+S5_exercise_judge
+S6_lecture_offer
+S7_lecture
 */
 
 /* =====================
@@ -50,13 +52,8 @@ app.post(
     },
   }),
   async (req, res) => {
-    try {
-      await Promise.all(req.body.events.map(handleEvent));
-      res.status(200).end();
-    } catch (e) {
-      console.error(e);
-      res.status(200).end();
-    }
+    await Promise.all(req.body.events.map(handleEvent));
+    res.status(200).end();
   }
 );
 
@@ -65,276 +62,157 @@ app.post(
 ===================== */
 async function handleEvent(event) {
   const userId = event.source.userId;
+  if (!userState[userId]) userState[userId] = { mode: "S0_question" };
 
-  /* -------- 画像 -------- */
-  if (event.message.type === "image") {
-    userState[userId] = {
-      mode: "waiting_answer",
-      imageId: event.message.id,
-    };
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "画像を受け取ったよ🐻✨\n\n" +
-        "この問題の公式の答えを送ってね。\n" +
-        "なければ「答えなし」で大丈夫だよ。",
-    });
-  }
-
-  /* -------- テキスト -------- */
   if (event.message.type !== "text") return;
   const text = event.message.text.trim();
 
-  /* 画像の答え待ち */
-  if (userState[userId]?.mode === "waiting_answer") {
-    const imageId = userState[userId].imageId;
-    const officialAnswer =
-      text === "答えなし" || text === "なし" ? null : text;
-
-    const base64 = await getImageBase64(imageId);
-    const result = await runVisionQuestionMode(base64, officialAnswer);
-
+  /* ========= S0 質問モード ========= */
+  if (userState[userId].mode === "S0_question") {
+    const answer = await runQuestion(text);
     userState[userId] = {
-      mode: "after_question",
-      lastQuestionText: result,
+      mode: "S2_after_question",
+      lastQuestion: text,
     };
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: result,
-    });
+    return reply(event, answer);
   }
 
-  /* 解説後 */
-  if (userState[userId]?.mode === "after_question") {
+  /* ========= S2 after_question ========= */
+  if (userState[userId].mode === "S2_after_question") {
     if (text.includes("類題")) {
-      userState[userId].mode = "exercise_question";
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text:
-          "いいね🐻🔥\n" +
-          "さっきの問題と同じ形で、数字だけ変えた問題を出すよ。",
-      });
+      userState[userId].mode = "S3_exercise_condition";
+      return reply(
+        event,
+        "いいね🐻✨\n\n時代・人物・場所を一言で教えてね！"
+      );
     }
-
-    // そのまま新しい質問
-    userState[userId] = { mode: "question_text" };
+    userState[userId].mode = "S0_question";
+    return reply(event, "じゃあ質問してみよう😊");
   }
 
-  /* ===== 演習モード：類題出題 ===== */
-  if (userState[userId]?.mode === "exercise_question") {
-    const subject = detectSubject(userState[userId].lastQuestionText);
-    const prompt = getExercisePrompt(subject);
-
-    const question = await callOpenAI([
-      { role: "system", content: prompt },
-      { role: "user", content: userState[userId].lastQuestionText },
-    ]);
+  /* ========= S3 条件入力 ========= */
+  if (userState[userId].mode === "S3_exercise_condition") {
+    const subject = detectSubject(text);
+    const question = await runExercise(userState[userId].lastQuestion, subject);
 
     userState[userId] = {
-      mode: "exercise_waiting_answer",
+      mode: "S5_exercise_judge",
       exerciseQuestion: question,
       subject,
     };
 
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "【類題】\n" +
-        question +
-        "\n\n答えだけ送っても大丈夫だよ。",
-    });
+    return reply(
+      event,
+      `【類題】\n${question}\n\n答えだけ送っても大丈夫だよ😊`
+    );
   }
 
-  /* ===== 演習モード：解答 or 分からない ===== */
-  if (userState[userId]?.mode === "exercise_waiting_answer") {
-    if (text.includes("分から")) {
-      const explain = await runTextQuestionMode(
-        userState[userId].exerciseQuestion
+  /* ========= S5 演習判定 ========= */
+  if (userState[userId].mode === "S5_exercise_judge") {
+    if (text.includes("わから")) {
+      userState[userId].mode = "S6_lecture_offer";
+      return reply(
+        event,
+        "だいじょうぶ😊\nここが一番伸びるところだよ🐻✨\n\n講義を受ける？\n・はい\n・いいえ"
       );
-
-      userState[userId].mode = "after_question";
-
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: explain,
-      });
     }
 
-    const judge = await callOpenAI([
-      {
-        role: "system",
-        content:
-          "次の問題と答えを見て、正しければ「正解」、違えば「不正解」だけを書いてください。",
-      },
-      {
-        role: "user",
-        content:
-          "問題:\n" +
-          userState[userId].exerciseQuestion +
-          "\n答え:\n" +
-          text,
-      },
-    ]);
+    const judge = await judgeAnswer(
+      userState[userId].exerciseQuestion,
+      text
+    );
 
-    userState[userId].mode = "after_question";
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        (judge.includes("正解")
-          ? "いいね！正解だよ🐻✨"
-          : "惜しい！でも大丈夫🐻✨") +
-        "\n\nほかに聞きたい？それともこの問題の類題を解いてみる？",
-    });
+    if (judge === "正解") {
+      userState[userId].mode = "S2_after_question";
+      return reply(event, "いいね！正解だよ🐻✨\n\n次どうする？");
+    } else {
+      userState[userId].mode = "S6_lecture_offer";
+      return reply(
+        event,
+        "惜しい😊\n\n講義を受けて整理してみる？\n・はい\n・いいえ"
+      );
+    }
   }
 
-  /* 質問モード開始 */
-  if (text === "①" || text === "質問") {
-    userState[userId] = { mode: "question_text" };
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "質問モードだよ🐻✨\n" +
-        "文章で質問してもいいし、画像でもOKだよ。",
-    });
+  /* ========= S6 講義提案 ========= */
+  if (userState[userId].mode === "S6_lecture_offer") {
+    if (text === "はい") {
+      userState[userId].mode = "S7_lecture";
+      return reply(event, getLectureText(userState[userId].subject));
+    }
+    userState[userId].mode = "S2_after_question";
+    return reply(event, "OK😊 じゃあ続けよう！");
   }
 
-  /* 文章質問 */
-  if (userState[userId]?.mode === "question_text") {
-    const result = await runTextQuestionMode(text);
-    userState[userId] = {
-      mode: "after_question",
-      lastQuestionText: text,
-    };
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: result,
-    });
+  /* ========= S7 講義 ========= */
+  if (userState[userId].mode === "S7_lecture") {
+    userState[userId].mode = "S2_after_question";
+    return reply(
+      event,
+      "ここまでどうかな？😊\n\n次はどうする？"
+    );
   }
-
-  return replyMenu(event.replyToken);
 }
 
 /* =====================
-   教科判定
+   GPT処理
 ===================== */
-function detectSubject(text) {
-  if (text.match(/[xX0-9＋－×÷]/)) return "math";
-  if (text.includes("天皇") || text.includes("時代")) return "history";
-  if (text.match(/[a-zA-Z]/)) return "english";
-  return "general";
-}
-
-/* =====================
-   類題プロンプト
-===================== */
-function getExercisePrompt(subject) {
-  if (subject === "math") {
-    return `
-あなたは中学生向けの数学の先生です。
-直前の問題と全く同じ構造・同じ解き方で、
-数字だけを変えた類題を1問作ってください。
-
-条件：
-・文章構造を変えない
-・解法を変えない
-・答えや解説は書かない
-・問題文のみを書く
-`;
-  }
-
-  if (subject === "history") {
-    return `
-あなたは中学生向けの歴史の先生です。
-直前の問題と同じ時代・同じ問い方で、
-人物名や年号だけを変えた類題を1問作ってください。
-
-条件：
-・時代を変えない
-・問いの形式を変えない
-・答えは書かない
-`;
-  }
-
-  return `
-直前の問題と同じ形式で、内容を少しだけ変えた類題を1問作ってください。
-答えは書かないでください。
-`;
-}
-
-/* =====================
-   質問モード（文章）
-===================== */
-async function runTextQuestionMode(text) {
-  const prompt = `
-あなたは「くまお先生」。
-中学生に黒板で教えるように説明します。
-
-【問題の要点】
-【解き方】
-1⃣
-2⃣
-3⃣
-【解説】
-【答え】
-
-最後に必ず
-「ほかに聞きたい？それともこの問題の類題を解いてみる？」
-と書く
-`;
-
+async function runQuestion(text) {
   return callOpenAI([
-    { role: "system", content: prompt },
+    {
+      role: "system",
+      content:
+        "あなたはくまお先生🐻✨ 中学生に黒板で教えるように説明してください。",
+    },
     { role: "user", content: text },
   ]);
 }
 
-/* =====================
-   Vision質問
-===================== */
-async function runVisionQuestionMode(imageBase64, officialAnswer) {
-  const prompt = `
-あなたは「くまお先生」。
-やさしく、短く、分かりやすく説明します。
-
-【問題の要点】
-【解き方】
-1⃣
-2⃣
-3⃣
-【解説】
-【答え】
-
-最後に
-「ほかに聞きたい？それともこの問題の類題を解いてみる？」
-と書く
-`;
-
+async function runExercise(baseText, subject) {
   return callOpenAI([
-    { role: "system", content: prompt },
-    {
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: officialAnswer
-            ? `公式の答えは「${officialAnswer}」です。`
-            : "公式の答えはありません。",
-        },
-        {
-          type: "image_url",
-          image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
-        },
-      ],
-    },
+    { role: "system", content: getExercisePrompt(subject) },
+    { role: "user", content: baseText },
   ]);
 }
 
+async function judgeAnswer(question, answer) {
+  const res = await callOpenAI([
+    {
+      role: "system",
+      content:
+        "正しければ「正解」、違えば「不正解」だけを書いてください。",
+    },
+    { role: "user", content: `問題:${question}\n答え:${answer}` },
+  ]);
+  return res.includes("正解") ? "正解" : "不正解";
+}
+
 /* =====================
-   OpenAI共通
+   プロンプト
+===================== */
+function getExercisePrompt(subject) {
+  return `
+あなたは「くまお先生」🐻✨
+直前と同じ構造・同じ解き方で類題を1問作ってください。
+答え・解説は禁止。
+`;
+}
+
+function getLectureText(subject) {
+  return `
+【くまお先生の講義🐻✨】
+
+今日はここを整理するよ😊
+・時代
+・中心人物
+・何が変わったか
+
+ノートを取りながら見てね📘
+`;
+}
+
+/* =====================
+   OpenAI
 ===================== */
 async function callOpenAI(messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -348,35 +226,26 @@ async function callOpenAI(messages) {
       messages,
     }),
   });
-
   const json = await res.json();
   return json.choices[0].message.content;
 }
 
 /* =====================
-   画像取得
+   判定
 ===================== */
-async function getImageBase64(messageId) {
-  const res = await fetch(
-    `https://api-data.line.me/v2/bot/message/${messageId}/content`,
-    {
-      headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
-    }
-  );
-  const buffer = await res.arrayBuffer();
-  return Buffer.from(buffer).toString("base64");
+function detectSubject(text) {
+  if (text.match(/[0-9×÷]/)) return "math";
+  if (text.includes("時代")) return "history";
+  return "general";
 }
 
 /* =====================
-   メニュー
+   reply helper
 ===================== */
-function replyMenu(replyToken) {
-  return client.replyMessage(replyToken, {
+function reply(event, text) {
+  return client.replyMessage(event.replyToken, {
     type: "text",
-    text:
-      "こんにちは🐻✨\n\n" +
-      "今日は何をする？\n" +
-      "① 質問がしたい",
+    text,
   });
 }
 
@@ -385,5 +254,5 @@ function replyMenu(replyToken) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 完成版 起動！");
+  console.log("🐻✨ くまお先生 起動！");
 });
