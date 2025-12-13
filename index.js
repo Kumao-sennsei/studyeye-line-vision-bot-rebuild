@@ -20,11 +20,11 @@ const client = new Client({
 });
 
 /* =====================
-   表示文言（最終確定）
+   表示文言（ULTIMATE）
 ===================== */
 const COPY = {
   MENU:
-    "こんにちは🐻✨\n\n今日は何をする？\n" +
+    "じゃあ次は何しよっか？🐻✨\n" +
     "① 質問がしたい\n" +
     "② 講義を受けたい\n" +
     "③ 演習（類題）をしたい\n" +
@@ -67,6 +67,9 @@ const COPY = {
     "この単元、講義で復習しよっか？🐻✨\n" +
     "・はい\n" +
     "・いいえ",
+
+  THANKS_REPLY:
+    "こちらこそ、ありがとう😊\n\n",
 };
 
 /* =====================
@@ -117,15 +120,27 @@ async function handleEvent(event) {
 
   /* ===== 画像 ===== */
   if (event.message?.type === "image") {
-    userState[userId] = {
-      mode: "image_wait",
-      imageId: event.message.id,
-    };
+    userState[userId] = { mode: "image_wait", imageId: event.message.id };
     return reply(event.replyToken, COPY.IMAGE_RECEIVED);
   }
 
   if (event.message?.type !== "text") return;
   const text = event.message.text.trim();
+
+  /* ===== 感想・お礼検知 ===== */
+  if (
+    text.includes("ありがとう") ||
+    text.includes("ありがと") ||
+    text.includes("助かった") ||
+    text.includes("OK") ||
+    text.includes("了解")
+  ) {
+    userState[userId].mode = "menu";
+    return reply(
+      event.replyToken,
+      COPY.THANKS_REPLY + COPY.MENU
+    );
+  }
 
   /* ===== メニュー ===== */
   if (userState[userId].mode === "menu") {
@@ -147,30 +162,20 @@ async function handleEvent(event) {
       base64,
       text === "答えなし" ? null : text
     );
-
-    userState[userId] = {
-      mode: "after_question",
-      lastProblemSummary: extractSummary(result),
-    };
-
+    userState[userId].mode = "after_question";
     return reply(event.replyToken, result);
   }
 
   /* ===== 文章質問 ===== */
   if (userState[userId].mode === "question") {
     const result = await runTextQuestionMode(text);
-
-    userState[userId] = {
-      mode: "after_question",
-      lastProblemSummary: extractSummary(result),
-    };
-
+    userState[userId].mode = "after_question";
     return reply(event.replyToken, result);
   }
 
   /* ===== after_question ===== */
   if (userState[userId].mode === "after_question") {
-    if (text.includes("類題") || text.startsWith("③")) {
+    if (text.includes("類題")) {
       userState[userId].mode = "practice_condition";
       return reply(event.replyToken, COPY.PRACTICE_GUIDE);
     }
@@ -180,23 +185,9 @@ async function handleEvent(event) {
 
   /* ===== 類題条件 ===== */
   if (userState[userId].mode === "practice_condition") {
-    const subject = detectSubject(
-      userState[userId].lastProblemSummary + " " + text
-    );
-    const sameOnly = text.includes("数値だけ");
-
-    const question = await generateExercise(
-      subject,
-      userState[userId].lastProblemSummary,
-      text,
-      sameOnly
-    );
-
-    userState[userId] = {
-      mode: "practice_answer",
-      exerciseQuestion: question,
-    };
-
+    const question = await generateExercise(text);
+    userState[userId].mode = "practice_answer";
+    userState[userId].exerciseQuestion = question;
     return reply(
       event.replyToken,
       "【類題】\n" + question + "\n\n" + COPY.ANSWER_ONLY
@@ -205,30 +196,23 @@ async function handleEvent(event) {
 
   /* ===== 類題解答 ===== */
   if (userState[userId].mode === "practice_answer") {
-    if (
-      text.includes("わから") ||
-      text.includes("分から") ||
-      text.includes("わかりません")
-    ) {
+    if (text.includes("わから")) {
       userState[userId].mode = "practice_explanation";
       return reply(event.replyToken, COPY.EXPLAIN_INTRO);
     }
-
     const judge = await judgeAnswer(
       userState[userId].exerciseQuestion,
       text
     );
-
     if (judge === "正解") {
       userState[userId].mode = "after_question";
       return reply(
         event.replyToken,
         COPY.PRAISE + "\n\n" + COPY.AFTER_QUESTION
       );
-    } else {
-      userState[userId].mode = "practice_explanation";
-      return reply(event.replyToken, COPY.EXPLAIN_INTRO);
     }
+    userState[userId].mode = "practice_explanation";
+    return reply(event.replyToken, COPY.EXPLAIN_INTRO);
   }
 
   /* ===== 類題 解説 ===== */
@@ -240,84 +224,37 @@ async function handleEvent(event) {
     return reply(event.replyToken, result);
   }
 
-  /* ===== 講義 確認 ===== */
+  /* ===== 講義確認 ===== */
   if (userState[userId].mode === "lecture_confirm") {
     if (text.includes("はい")) {
       userState[userId].mode = "lecture";
       return reply(
         event.replyToken,
-        "よしっ😊\nじゃあ、この単元を講義で復習しよう🐻✨"
+        "よしっ😊\nじゃあ講義で復習しよう🐻✨"
       );
     }
-    if (text.includes("いいえ")) {
-      userState[userId].mode = "after_question";
-      return reply(
-        event.replyToken,
-        "OK😊\nじゃあ次は何しよっか？"
-      );
-    }
-    return reply(event.replyToken, "「はい」か「いいえ」で教えてね😊");
+    userState[userId].mode = "menu";
+    return reply(
+      event.replyToken,
+      "OK😊\n\n" + COPY.MENU
+    );
   }
 
   /* ===== 講義 ===== */
   if (userState[userId].mode === "lecture") {
-    userState[userId].mode = "after_question";
+    userState[userId].mode = "menu";
     return reply(
       event.replyToken,
       "🐻✨ くまお先生の講義\n\n" +
         "この単元を、教科書レベルで\n" +
         "ていねいに整理して説明するよ📘\n\n" +
-        COPY.AFTER_QUESTION
+        COPY.MENU
     );
   }
 }
 
 /* =====================
-   教科判定
-===================== */
-function detectSubject(text) {
-  if (text.match(/[0-9×÷]/)) return "math";
-  if (text.match(/[a-zA-Z]/)) return "english";
-  if (text.includes("反応") || text.includes("力")) return "science";
-  return "history";
-}
-
-/* =====================
-   類題生成
-===================== */
-async function generateExercise(subject, summary, condition, sameOnly) {
-  let rule = "";
-  if (subject === "math") {
-    rule = sameOnly
-      ? "直前の問題と同じ構造で数値だけを変更する。"
-      : "同じ単元・同じ解法で条件を少し変える。";
-  } else if (subject === "english") {
-    rule =
-      "同じ内容で、肯定文・否定文・疑問文など視点を変える。";
-  } else {
-    rule =
-      "同じテーマで、人物・用語・原因・結果など視点を変える。";
-  }
-
-  const prompt = `
-問題文のみを1問出してください。
-答え・解説は禁止です。
-
-元の問題の要点：
-${summary}
-
-生徒の希望：
-${condition}
-
-出題ルール：
-${rule}
-`;
-
-  return callOpenAI([{ role: "system", content: prompt }]);
-}
-
-/* =====================
-   解説（テンプレ厳守）
+   GPT 呼び出し（解説テンプレ固定）
 ===================== */
 async function runTextQuestionMode(text) {
   const prompt = `
@@ -345,12 +282,13 @@ async function runTextQuestionMode(text) {
 ---
 
 【答え】
+※記述問題の場合は正答例を必ず1つ書く
+※単語・数値は必ず明示する
 
 ---
 
 ほかに聞きたい？それともこの問題の類題を解いてみる？
 `;
-
   return callOpenAI([
     { role: "system", content: prompt },
     { role: "user", content: text },
@@ -358,81 +296,11 @@ async function runTextQuestionMode(text) {
 }
 
 async function runVisionQuestionMode(imageBase64, answer) {
-  const prompt = `
-あなたは「くまお先生」です。
-以下のテンプレートを【完全に厳守】してください。
-
-くまお先生です！やさしく解説するね🐻✨
-
----
-
-【問題の要点】
-
----
-
-【解き方】
-
-1⃣
-2⃣
-3⃣
-
----
-
-【解説】
-
----
-
-【答え】
-
----
-
-ほかに聞きたい？それともこの問題の類題を解いてみる？
-
-重要：
-・「答えなし」の場合は必ず画像の問題を解く
-・画像が見えない等の発言は禁止
-`;
-
-  return callOpenAI([
-    { role: "system", content: prompt },
-    {
-      role: "user",
-      content: [
-        { type: "text", text: answer ? `答え：${answer}` : "答えなし" },
-        {
-          type: "image_url",
-          image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
-        },
-      ],
-    },
-  ]);
+  return runTextQuestionMode("画像の問題");
 }
 
 /* =====================
-   判定
-===================== */
-async function judgeAnswer(q, a) {
-  const res = await callOpenAI([
-    {
-      role: "system",
-      content:
-        "正しければ「正解」、違えば「不正解」だけを書いてください。",
-    },
-    { role: "user", content: `問題:${q}\n答え:${a}` },
-  ]);
-  return res.includes("正解") ? "正解" : "不正解";
-}
-
-/* =====================
-   要約抽出
-===================== */
-function extractSummary(text) {
-  const m = text.match(/【問題の要点】([\s\S]*?)【/);
-  return m ? m[1].trim() : text.slice(0, 40);
-}
-
-/* =====================
-   OpenAI
+   GPT共通
 ===================== */
 async function callOpenAI(messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -451,9 +319,29 @@ async function callOpenAI(messages) {
   return json.choices[0].message.content;
 }
 
-/* =====================
-   画像取得
-===================== */
+async function generateExercise(condition) {
+  return callOpenAI([
+    {
+      role: "system",
+      content:
+        "問題文のみを1問作成してください。答え・解説は禁止。",
+    },
+    { role: "user", content: condition },
+  ]);
+}
+
+async function judgeAnswer(q, a) {
+  const res = await callOpenAI([
+    {
+      role: "system",
+      content:
+        "正しければ「正解」、違えば「不正解」だけを書いてください。",
+    },
+    { role: "user", content: `問題:${q}\n答え:${a}` },
+  ]);
+  return res.includes("正解") ? "正解" : "不正解";
+}
+
 async function getImageBase64(messageId) {
   const res = await fetch(
     `https://api-data.line.me/v2/bot/message/${messageId}/content`,
@@ -465,9 +353,6 @@ async function getImageBase64(messageId) {
   return Buffer.from(buffer).toString("base64");
 }
 
-/* =====================
-   reply
-===================== */
 function reply(token, text) {
   return client.replyMessage(token, { type: "text", text });
 }
@@ -477,5 +362,5 @@ function reply(token, text) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ くまお先生 BOT 最終FINAL 起動！");
+  console.log("🐻✨ くまお先生 BOT ULTIMATE 起動！");
 });
