@@ -20,48 +20,51 @@ const client = new Client({
 });
 
 /* =====================
-   表示文言（承認制）
+   表示文言（確定版）
 ===================== */
 const COPY = {
   MENU:
     "こんにちは🐻✨\n\n今日は何をする？\n" +
     "① 質問がしたい\n" +
     "② 講義を受けたい\n" +
-    "③ 演習がしたい\n" +
+    "③ 演習（類題）をしたい\n" +
     "④ 雑談がしたい",
 
-  ENTER_QUESTION:
+  QUESTION_START:
     "質問モードだよ🐻✨\n" +
-    "文章で質問してもOK。\n" +
-    "問題の写真を送っても大丈夫だよ。",
+    "文章で質問してもいいし、問題の写真を送ってもOKだよ😊",
 
-  PRACTICE_GUIDE:
-    "いいね🐻✨\n\nじゃあ類題を作るよ。\n" +
-    "次の3つを教えてね😊\n" +
-    "① 単元（例：定積分、二次関数）\n" +
-    "② 問題のタイプ（例：計算、文章題）\n" +
-    "③ むずかしさ（例：やさしめ、ふつう）\n\n" +
-    "例：\n定積分 計算 やさしめ\n\n" +
-    "※「さっきの問題と同じで、数値だけ変えて」でもOK",
-
-  IMG_RECEIVED:
+  IMAGE_RECEIVED:
     "画像を受け取ったよ🐻✨\n\n" +
     "この問題の公式の答えがあれば送ってね。\n" +
     "なければ「答えなし」で大丈夫だよ😊",
 
   AFTER_QUESTION:
     "ほかに聞きたいことある？\n" +
-    "それとも、この問題の類題を解いてみる？\n\n" +
-    "類題を解くなら、\n" +
-    "単元（または 時代・人物・場所）を教えてね🐻✨",
+    "それとも、この問題の類題を解いてみる？",
 
-  ANSWER_ONLY: "答えだけ送っても大丈夫だよ😊",
+  PRACTICE_GUIDE:
+    "いいね🐻✨\n\n" +
+    "じゃあ類題を作るよ。\n" +
+    "次の3つを教えてね😊\n" +
+    "① 単元\n" +
+    "② 問題のタイプ\n" +
+    "③ むずかしさ\n\n" +
+    "※「さっきの問題と同じで、数値だけ変えて」でもOK",
+
+  ANSWER_ONLY:
+    "答えだけ送っても大丈夫だよ😊",
+
+  PRAISE:
+    "すごい！正解だよ🐻✨\n" +
+    "ちゃんと理解できてる証拠だね😊",
 
   LECTURE_OFFER:
     "だいじょうぶだよ😊\n" +
-    "ここが一番の伸びポイントだね🐻✨\n\n" +
-    "このテーマの講義を受ける？\n" +
-    "・はい\n・いいえ",
+    "ここが一番伸びるところだね🐻✨\n\n" +
+    "このテーマの講義を受けてみる？\n" +
+    "・はい\n" +
+    "・いいえ",
 };
 
 /* =====================
@@ -72,17 +75,11 @@ const userState = {};
 mode:
 menu
 question
-after_question
 image_wait
+after_question
 practice_condition
 practice_answer
-lecture_offer
-
-memory:
-lastProblemSummary
-exerciseQuestion
-practiceCondition
-subject
+lecture
 */
 
 /* =====================
@@ -120,7 +117,7 @@ async function handleEvent(event) {
       mode: "image_wait",
       imageId: event.message.id,
     };
-    return reply(event.replyToken, COPY.IMG_RECEIVED);
+    return reply(event.replyToken, COPY.IMAGE_RECEIVED);
   }
 
   if (event.message?.type !== "text") return;
@@ -130,7 +127,7 @@ async function handleEvent(event) {
   if (userState[userId].mode === "menu") {
     if (text.startsWith("①")) {
       userState[userId].mode = "question";
-      return reply(event.replyToken, COPY.ENTER_QUESTION);
+      return reply(event.replyToken, COPY.QUESTION_START);
     }
     if (text.startsWith("③")) {
       userState[userId].mode = "practice_condition";
@@ -139,32 +136,30 @@ async function handleEvent(event) {
     return reply(event.replyToken, COPY.MENU);
   }
 
-  /* ===== 画像回答 ===== */
+  /* ===== 画像質問 ===== */
   if (userState[userId].mode === "image_wait") {
     const base64 = await getImageBase64(userState[userId].imageId);
+
     const result = await runVisionQuestionMode(
       base64,
       text === "答えなし" ? null : text
     );
 
-    const summary = extractSummary(result);
-
     userState[userId] = {
       mode: "after_question",
-      lastProblemSummary: summary,
+      lastProblemSummary: extractSummary(result),
     };
 
     return reply(event.replyToken, result);
   }
 
-  /* ===== 質問 ===== */
+  /* ===== 文章質問 ===== */
   if (userState[userId].mode === "question") {
     const result = await runTextQuestionMode(text);
-    const summary = extractSummary(result);
 
     userState[userId] = {
       mode: "after_question",
-      lastProblemSummary: summary,
+      lastProblemSummary: extractSummary(result),
     };
 
     return reply(event.replyToken, result);
@@ -177,28 +172,27 @@ async function handleEvent(event) {
       return reply(event.replyToken, COPY.PRACTICE_GUIDE);
     }
     userState[userId].mode = "question";
-    return reply(event.replyToken, COPY.ENTER_QUESTION);
+    return reply(event.replyToken, COPY.QUESTION_START);
   }
 
-  /* ===== 演習条件 ===== */
+  /* ===== 類題条件 ===== */
   if (userState[userId].mode === "practice_condition") {
     const subject = detectSubject(
       userState[userId].lastProblemSummary + " " + text
     );
 
-    const sameStructure = text.includes("数値だけ変");
+    const sameOnly = text.includes("数値だけ");
 
     const question = await generateExercise(
       subject,
       userState[userId].lastProblemSummary,
       text,
-      sameStructure
+      sameOnly
     );
 
     userState[userId] = {
       mode: "practice_answer",
       exerciseQuestion: question,
-      subject,
     };
 
     return reply(
@@ -207,10 +201,10 @@ async function handleEvent(event) {
     );
   }
 
-  /* ===== 演習回答 ===== */
+  /* ===== 類題解答 ===== */
   if (userState[userId].mode === "practice_answer") {
     if (text.includes("わから")) {
-      userState[userId].mode = "lecture_offer";
+      userState[userId].mode = "lecture";
       return reply(event.replyToken, COPY.LECTURE_OFFER);
     }
 
@@ -223,22 +217,22 @@ async function handleEvent(event) {
       userState[userId].mode = "after_question";
       return reply(
         event.replyToken,
-        "いいね！正解だよ🐻✨\n\n" + COPY.AFTER_QUESTION
+        COPY.PRAISE + "\n\n" + COPY.AFTER_QUESTION
       );
     } else {
-      userState[userId].mode = "lecture_offer";
+      userState[userId].mode = "lecture";
       return reply(event.replyToken, COPY.LECTURE_OFFER);
     }
   }
 
-  /* ===== 講義提案 ===== */
-  if (userState[userId].mode === "lecture_offer") {
+  /* ===== 講義 ===== */
+  if (userState[userId].mode === "lecture") {
     userState[userId].mode = "after_question";
     return reply(
       event.replyToken,
       "🐻✨ くまお先生の講義\n\n" +
-        "このテーマを整理して説明するよ。\n" +
-        "ノートを取りながら聞いてね📘\n\n" +
+        "このテーマを、教科書レベルで\n" +
+        "ていねいに整理して説明するよ📘\n\n" +
         COPY.AFTER_QUESTION
     );
   }
@@ -255,7 +249,7 @@ function detectSubject(text) {
 }
 
 /* =====================
-   類題生成（最終思想）
+   類題生成
 ===================== */
 async function generateExercise(subject, summary, condition, sameOnly) {
   let rule = "";
@@ -263,7 +257,7 @@ async function generateExercise(subject, summary, condition, sameOnly) {
   if (subject === "math") {
     rule = sameOnly
       ? "直前の問題と完全に同じ構造で、数値だけを変更する。"
-      : "同じ単元・同じ解法で、数値や条件を少し変える。";
+      : "同じ単元・同じ解法で、条件を少し変える。";
   } else if (subject === "english") {
     rule =
       "同じ内容の文を使い、肯定文・否定文・疑問文など視点を変える。";
@@ -308,8 +302,8 @@ async function runTextQuestionMode(text) {
 【解説】
 【答え】
 
-最後に必ず以下をそのまま書く：
-${COPY.AFTER_QUESTION}
+解説が終わるまでは、
+次の行動を促してはいけません。
 `;
 
   return callOpenAI([
@@ -319,7 +313,27 @@ ${COPY.AFTER_QUESTION}
 }
 
 async function runVisionQuestionMode(imageBase64, answer) {
-  return runTextQuestionMode("（画像問題）");
+  const prompt = `
+重要：
+ユーザーが「答えなし」と入力した場合は、
+画像の問題を必ず解いて解説してください。
+
+画像が見えない、再送を求める等の発言は禁止。
+`;
+
+  return callOpenAI([
+    { role: "system", content: prompt },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: answer ? `答え：${answer}` : "答えなし" },
+        {
+          type: "image_url",
+          image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
+        },
+      ],
+    },
+  ]);
 }
 
 /* =====================
