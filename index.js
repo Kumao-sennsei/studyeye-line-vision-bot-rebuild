@@ -20,7 +20,7 @@ const client = new Client({
 });
 
 /* =====================
-   表示文言（確定版）
+   表示文言（最終確定）
 ===================== */
 const COPY = {
   MENU:
@@ -40,8 +40,7 @@ const COPY = {
     "なければ「答えなし」で大丈夫だよ😊",
 
   AFTER_QUESTION:
-    "ほかに聞きたいことある？\n" +
-    "それとも、この問題の類題を解いてみる？",
+    "ほかに聞きたい？それともこの問題の類題を解いてみる？",
 
   PRACTICE_GUIDE:
     "いいね🐻✨\n\n" +
@@ -52,8 +51,7 @@ const COPY = {
     "③ むずかしさ\n\n" +
     "※「さっきの問題と同じで、数値だけ変えて」でもOK",
 
-  ANSWER_ONLY:
-    "答えだけ送っても大丈夫だよ😊",
+  ANSWER_ONLY: "答えだけ送っても大丈夫だよ😊",
 
   PRAISE:
     "すごい！正解だよ🐻✨\n" +
@@ -139,7 +137,6 @@ async function handleEvent(event) {
   /* ===== 画像質問 ===== */
   if (userState[userId].mode === "image_wait") {
     const base64 = await getImageBase64(userState[userId].imageId);
-
     const result = await runVisionQuestionMode(
       base64,
       text === "答えなし" ? null : text
@@ -257,7 +254,7 @@ async function generateExercise(subject, summary, condition, sameOnly) {
   if (subject === "math") {
     rule = sameOnly
       ? "直前の問題と完全に同じ構造で、数値だけを変更する。"
-      : "同じ単元・同じ解法で、条件を少し変える。";
+      : "同じ単元・同じ解法で条件を少し変える。";
   } else if (subject === "english") {
     rule =
       "同じ内容の文を使い、肯定文・否定文・疑問文など視点を変える。";
@@ -267,7 +264,10 @@ async function generateExercise(subject, summary, condition, sameOnly) {
   }
 
   const prompt = `
-あなたは「くまお先生」🐻✨
+あなたは「くまお先生」です。
+
+問題文のみを1問出してください。
+答え・解説・前置きは禁止です。
 
 元の問題の要点：
 ${summary}
@@ -277,33 +277,48 @@ ${condition}
 
 出題ルール：
 ${rule}
-
-条件：
-・問題文のみ
-・答えや解説は禁止
-・1問だけ
 `;
 
   return callOpenAI([{ role: "system", content: prompt }]);
 }
 
 /* =====================
-   解説モード
+   解説（テンプレ厳守）
 ===================== */
 async function runTextQuestionMode(text) {
   const prompt = `
-あなたは「くまお先生」🐻✨
+あなたは「くまお先生」です。
+
+以下のテンプレートを【完全に厳守】してください。
+構成・見出し・順序・文言の変更は禁止です。
+
+【使用テンプレート】
+
+くまお先生です！やさしく解説するね🐻✨
+
+---
 
 【問題の要点】
+
+---
+
 【解き方】
+
 1⃣
 2⃣
 3⃣
+
+---
+
 【解説】
+
+---
+
 【答え】
 
-解説が終わるまでは、
-次の行動を促してはいけません。
+---
+
+ほかに聞きたい？それともこの問題の類題を解いてみる？
 `;
 
   return callOpenAI([
@@ -314,11 +329,41 @@ async function runTextQuestionMode(text) {
 
 async function runVisionQuestionMode(imageBase64, answer) {
   const prompt = `
-重要：
-ユーザーが「答えなし」と入力した場合は、
-画像の問題を必ず解いて解説してください。
+あなたは「くまお先生」です。
 
-画像が見えない、再送を求める等の発言は禁止。
+以下のテンプレートを【完全に厳守】してください。
+
+【使用テンプレート】
+
+くまお先生です！やさしく解説するね🐻✨
+
+---
+
+【問題の要点】
+
+---
+
+【解き方】
+
+1⃣
+2⃣
+3⃣
+
+---
+
+【解説】
+
+---
+
+【答え】
+
+---
+
+ほかに聞きたい？それともこの問題の類題を解いてみる？
+
+重要：
+・「答えなし」の場合は必ず画像の問題を解いて解説する
+・画像が見えない等の発言は禁止
 `;
 
   return callOpenAI([
@@ -405,5 +450,5 @@ function reply(token, text) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ くまお先生 最終形態 起動！");
+  console.log("🐻✨ くまお先生 最終完成版 起動！");
 });
