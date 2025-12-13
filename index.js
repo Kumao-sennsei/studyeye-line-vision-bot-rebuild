@@ -57,10 +57,14 @@ const COPY = {
     "すごい！正解だよ🐻✨\n" +
     "ちゃんと理解できてる証拠だね😊",
 
-  LECTURE_OFFER:
+  EXPLAIN_INTRO:
     "だいじょうぶだよ😊\n" +
-    "ここが一番伸びるところだね🐻✨\n\n" +
-    "このテーマの講義を受けてみる？\n" +
+    "ここは少し難しかったね。\n\n" +
+    "まずは、この問題の考え方を\n" +
+    "解説でいっしょに整理しよう🐻✨",
+
+  LECTURE_CONFIRM:
+    "この単元、講義で復習しよっか？🐻✨\n" +
     "・はい\n" +
     "・いいえ",
 };
@@ -77,6 +81,8 @@ image_wait
 after_question
 practice_condition
 practice_answer
+practice_explanation
+lecture_confirm
 lecture
 */
 
@@ -177,7 +183,6 @@ async function handleEvent(event) {
     const subject = detectSubject(
       userState[userId].lastProblemSummary + " " + text
     );
-
     const sameOnly = text.includes("数値だけ");
 
     const question = await generateExercise(
@@ -200,9 +205,13 @@ async function handleEvent(event) {
 
   /* ===== 類題解答 ===== */
   if (userState[userId].mode === "practice_answer") {
-    if (text.includes("わから")) {
-      userState[userId].mode = "lecture";
-      return reply(event.replyToken, COPY.LECTURE_OFFER);
+    if (
+      text.includes("わから") ||
+      text.includes("分から") ||
+      text.includes("わかりません")
+    ) {
+      userState[userId].mode = "practice_explanation";
+      return reply(event.replyToken, COPY.EXPLAIN_INTRO);
     }
 
     const judge = await judgeAnswer(
@@ -217,9 +226,37 @@ async function handleEvent(event) {
         COPY.PRAISE + "\n\n" + COPY.AFTER_QUESTION
       );
     } else {
-      userState[userId].mode = "lecture";
-      return reply(event.replyToken, COPY.LECTURE_OFFER);
+      userState[userId].mode = "practice_explanation";
+      return reply(event.replyToken, COPY.EXPLAIN_INTRO);
     }
+  }
+
+  /* ===== 類題 解説 ===== */
+  if (userState[userId].mode === "practice_explanation") {
+    const result = await runTextQuestionMode(
+      userState[userId].exerciseQuestion
+    );
+    userState[userId].mode = "lecture_confirm";
+    return reply(event.replyToken, result);
+  }
+
+  /* ===== 講義 確認 ===== */
+  if (userState[userId].mode === "lecture_confirm") {
+    if (text.includes("はい")) {
+      userState[userId].mode = "lecture";
+      return reply(
+        event.replyToken,
+        "よしっ😊\nじゃあ、この単元を講義で復習しよう🐻✨"
+      );
+    }
+    if (text.includes("いいえ")) {
+      userState[userId].mode = "after_question";
+      return reply(
+        event.replyToken,
+        "OK😊\nじゃあ次は何しよっか？"
+      );
+    }
+    return reply(event.replyToken, "「はい」か「いいえ」で教えてね😊");
   }
 
   /* ===== 講義 ===== */
@@ -228,7 +265,7 @@ async function handleEvent(event) {
     return reply(
       event.replyToken,
       "🐻✨ くまお先生の講義\n\n" +
-        "このテーマを、教科書レベルで\n" +
+        "この単元を、教科書レベルで\n" +
         "ていねいに整理して説明するよ📘\n\n" +
         COPY.AFTER_QUESTION
     );
@@ -250,24 +287,21 @@ function detectSubject(text) {
 ===================== */
 async function generateExercise(subject, summary, condition, sameOnly) {
   let rule = "";
-
   if (subject === "math") {
     rule = sameOnly
-      ? "直前の問題と完全に同じ構造で、数値だけを変更する。"
+      ? "直前の問題と同じ構造で数値だけを変更する。"
       : "同じ単元・同じ解法で条件を少し変える。";
   } else if (subject === "english") {
     rule =
-      "同じ内容の文を使い、肯定文・否定文・疑問文など視点を変える。";
+      "同じ内容で、肯定文・否定文・疑問文など視点を変える。";
   } else {
     rule =
-      "同一テーマを使い、人物・用語・原因・結果など視点を変える。";
+      "同じテーマで、人物・用語・原因・結果など視点を変える。";
   }
 
   const prompt = `
-あなたは「くまお先生」です。
-
 問題文のみを1問出してください。
-答え・解説・前置きは禁止です。
+答え・解説は禁止です。
 
 元の問題の要点：
 ${summary}
@@ -288,11 +322,7 @@ ${rule}
 async function runTextQuestionMode(text) {
   const prompt = `
 あなたは「くまお先生」です。
-
 以下のテンプレートを【完全に厳守】してください。
-構成・見出し・順序・文言の変更は禁止です。
-
-【使用テンプレート】
 
 くまお先生です！やさしく解説するね🐻✨
 
@@ -330,10 +360,7 @@ async function runTextQuestionMode(text) {
 async function runVisionQuestionMode(imageBase64, answer) {
   const prompt = `
 あなたは「くまお先生」です。
-
 以下のテンプレートを【完全に厳守】してください。
-
-【使用テンプレート】
 
 くまお先生です！やさしく解説するね🐻✨
 
@@ -362,7 +389,7 @@ async function runVisionQuestionMode(imageBase64, answer) {
 ほかに聞きたい？それともこの問題の類題を解いてみる？
 
 重要：
-・「答えなし」の場合は必ず画像の問題を解いて解説する
+・「答えなし」の場合は必ず画像の問題を解く
 ・画像が見えない等の発言は禁止
 `;
 
@@ -450,5 +477,5 @@ function reply(token, text) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ くまお先生 最終完成版 起動！");
+  console.log("🐻✨ くまお先生 BOT 最終FINAL 起動！");
 });
