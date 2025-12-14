@@ -254,19 +254,17 @@ async function handleEvent(event) {
 }
 
 /* =====================
-   GPT 呼び出し（解説テンプレ固定）
+   GPTプロンプト定義（安全版）
 ===================== */
-async function runTextQuestionMode(text) {
-  const prompt = `
-あなたは「くまお先生」です。
-以下のテンプレートを【完全に厳守】してください。
+
+const BASE_RULE_PROMPT = `
 【表記ルール（必ず守ること）】
 
 ・LINE上で表示されることを前提とする
 ・Markdown記法は禁止
-　（**、__、##、---、箇条書きの装飾などは使わない）
+（**、__、##、--- などは使わない）
 ・LaTeX記法は禁止
-　（\frac、\[ \]、数式コマンドは使わない）
+（\\frac、\\[ \\]、数式コマンドは使わない）
 ・仕切り線（--- や ――）は使わない
 
 【数式・記号について】
@@ -275,14 +273,16 @@ async function runTextQuestionMode(text) {
 　√、√2、×、÷、＝、＋、－
 ・指数は上付き文字を使ってよい
 　例：10²³ 個、m²、cm³
-・「10の23乗」のような表現も可
-
 ・最低限の数式で、読みやすさを最優先する
+
 ・図やグラフが必要な場合は、文章で状況を説明する
+`;
+
+const QUESTION_TEMPLATE_PROMPT = `
 くまお先生です！やさしく解説するね🐻✨
 
 【問題の要点】
-この問題は〜〜を求める問題だよ！
+この問題は何を求める問題かを説明するよ。
 
 【解き方】
 ①
@@ -290,8 +290,7 @@ async function runTextQuestionMode(text) {
 ③
 
 【解説】
-順番に説明するね😊
-途中の考え方が大事だよ！
+順番に考え方を説明するね。
 
 【答え】
 ・単語や数値の答えは必ずはっきり書く
@@ -299,38 +298,45 @@ async function runTextQuestionMode(text) {
 
 ほかに聞きたい？
 それともこの問題の類題を解いてみる？
+`;
+
+const QUESTION_SYSTEM_PROMPT =
+  BASE_RULE_PROMPT + QUESTION_TEMPLATE_PROMPT;
+
+const EXERCISE_RULE_PROMPT = `
 【類題作成ルール】
 
 ・直前の問題と同じ「問題の型」を必ず維持する
 ・問題の構造、聞き方、解き方は変えない
-・数値・条件・人物など、指定された部分のみを変更する
+・数値、条件、人物など指定された部分のみを変更する
 
 ・生徒が
-　「さっきの問題で数値を変えて」
-　「同じ問題で条件だけ変えて」
-　と言った場合も、必ず同型問題を作る
+「さっきの問題で数値を変えて」
+「同じ問題で条件だけ変えて」
+と言った場合も、必ず同型問題を作る
 
 ・類題には必ず【答え】もつける
-　（解説は簡潔でよい）
-【内部用】
-類題を作るときは、直前の問題について次を意識すること。
+（解説は簡潔でよい）
+`;
 
-・教科
-・問題の型（例：物質量→原子の数を求める計算）
-・解く手順（例：nを求めてから定数をかける）
+const EXERCISE_SYSTEM_PROMPT =
+  BASE_RULE_PROMPT + EXERCISE_RULE_PROMPT;
 
-これらを維持したまま類題を作る。
-
-
-く  return callOpenAI([
-    { role: "system", content: prompt },
+async function runQuestionMode(text) {
+  return callOpenAI([
+    { role: "system", content: QUESTION_SYSTEM_PROMPT },
+    { role: "user", content: text },
+  ]);
+}
+async function runExerciseMode(text) {
+  return callOpenAI([
+    { role: "system", content: EXERCISE_SYSTEM_PROMPT },
     { role: "user", content: text },
   ]);
 }
 
-async function runVisionQuestionMode(imageBase64, answer) {
-  return runTextQuestionMode("画像の問題");
-}
+
+
 
 /* =====================
    GPT共通
