@@ -91,7 +91,13 @@ async function handleEvent(event) {
 
     return client.replyMessage(event.replyToken, {
       type: "text",
-      text:
+       text:
+      "こんにちは🐻✨\n\n" +
+      "今日は何をする？\n" +
+      "① 質問がしたい 😊\n" +
+      "② 講義を受けたい 📘\n" +
+      "③ 演習（類題）をしたい ✏️\n" +
+      "④ 雑談がしたい ☕"
         "解説の品質を最高のものにするために、\n" +
         "先に問題と答えを送ってください🐻✨\n\n" +
         "答えが分かっている場合は、\n" +
