@@ -25,42 +25,64 @@ const client = new Client({
 const userState = {};
 
 /* =====================
-   🐻 共通プロンプト（JS安全）
+   プロンプト（JS安全）
 ===================== */
 
 const BASE_RULE_PROMPT = `
-あなたは「くまお先生」。
-やさしく、落ち着いて、生徒に寄り添って説明します🐻✨
+あなたは「くまお先生」。とてもやさしく明るく、生徒に寄り添うスーパー先生🐻✨
 
 【表記ルール（必ず守る）】
-・LINE上で読みやすい文章のみを使う
-・「**」「---」「===」などの装飾記号は禁止
-・数式は最小限にする
-・√、√2、〇²³ のような表記は使用OK
+・LINE上で読みやすい文章のみ
+・Markdown記法は禁止（**、__、##、---、=== など使わない）
+・LaTeX記法は禁止（\\frac、\\[ \\] など使わない）
+・仕切り線（--- や ――）は使わない
+・√、√2、10²³ の表記は使用OK
 ・分数は a/b の形で書く
-・LaTeX記法（\\frac, \\sin 等）は使わない
 
-【解説テンプレ（厳守）】
+【テンプレ厳守】
+・必ず最初の1行目は次の文言に固定：
+「くまお先生です！やさしく解説するね🐻✨」
+
+・解き方の手順は必ず 1⃣ 2⃣ 3⃣
+（①②③は共通テストの選択肢と混同するので使わない）
+`;
+
+const QUESTION_TEMPLATE_PROMPT = `
+くまお先生です！やさしく解説するね🐻✨
+
 【問題の要点】
+
 【解き方】
 1⃣
 2⃣
 3⃣
+
 【解説】
+
 【答え】
+・単語や数値は必ずはっきり書く
+・記述問題の場合は正答例を1つ示す
+
+ほかに聞きたい？
+それともこの問題の類題を解いてみる？
 `;
 
-const EXERCISE_RULE_PROMPT = `
-【類題ルール】
-・類題には必ず【答え】をつける
-・記述問題は【正答例】を必ず書く
-・解説は簡潔でよい
-・直前の問題と同じ単元・同じ考え方
-・「数値だけ変えて」と指定されたら必ず従う
+const QUESTION_SYSTEM_PROMPT = BASE_RULE_PROMPT + QUESTION_TEMPLATE_PROMPT;
+
+const VISION_RULE_PROMPT = `
+【画像問題のルール】
+・画像内の文章／条件／構造式／選択肢番号を丁寧に読み取る
+・共通テストなど選択肢問題の場合：
+　【答え】は必ず「①〜⑥」のいずれかで出す
+・公式の答え（正答番号や正答）が与えられた場合：
+　その答えを正解として扱い、解説を必ずその答えに合わせる
+　（もし自分の推定とズレても、公式の答えを優先）
+・不鮮明で確信が持てない場合：
+　当てずっぽうで断定せず、「選択肢の番号が読みにくい」など短く正直に述べる
 `;
 
-const QUESTION_SYSTEM_PROMPT = BASE_RULE_PROMPT;
-const EXERCISE_SYSTEM_PROMPT = BASE_RULE_PROMPT + EXERCISE_RULE_PROMPT;
+const VISION_SYSTEM_PROMPT =
+  BASE_RULE_PROMPT + VISION_RULE_PROMPT + QUESTION_TEMPLATE_PROMPT;
 
 /* =====================
    Webhook
@@ -95,28 +117,46 @@ app.post(
 async function handleEvent(event) {
   const userId = event.source.userId;
 
-  if (event.message.type === "image") {
-    userState[userId] = { mode: "waiting_answer", imageId: event.message.id };
+  /* 画像 */
+  if (event.message?.type === "image") {
+    userState[userId] = {
+      mode: "waiting_official_answer",
+      imageId: event.message.id,
+    };
+
     return client.replyMessage(event.replyToken, {
       type: "text",
       text:
         "画像を受け取ったよ🐻✨\n" +
-        "この問題の公式の答えがあれば送ってね。\n" +
-        "なければ「答えなし」でOKだよ😊",
+        "この問題の公式の答え（例：①、⑥、または答えの語句）が分かれば送ってね。\n" +
+        "分からなければ「答えなし」でOKだよ😊",
     });
   }
 
-  if (event.message.type !== "text") return;
+  /* テキスト */
+  if (event.message?.type !== "text") return;
   const text = event.message.text.trim();
 
-  if (userState[userId]?.mode === "waiting_answer") {
-    const base64 = await getImageBase64(userState[userId].imageId);
-    const result = await runVisionQuestionMode(base64);
+  /* 画像の答え待ち */
+  if (userState[userId]?.mode === "waiting_official_answer") {
+    const imageId = userState[userId].imageId;
+
+    const officialAnswer =
+      text === "答えなし" || text === "なし" ? null : text;
+
+    const base64 = await getImageBase64(imageId);
+    const result = await runVisionQuestionMode(base64, officialAnswer);
+
     userState[userId] = { mode: "after_question" };
-    return client.replyMessage(event.replyToken, { type: "text", text: result });
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: result,
+    });
   }
 
-  if (text === "①" || text === "質問がしたい") {
+  /* メニュー選択：今の仕様どおり（①のみ運用中ならここだけでもOK） */
+  if (text === "①" || text === "質問がしたい" || text.includes("質問")) {
     userState[userId] = { mode: "question_text" };
     return client.replyMessage(event.replyToken, {
       type: "text",
@@ -126,9 +166,10 @@ async function handleEvent(event) {
     });
   }
 
+  /* 質問（文章） */
   if (userState[userId]?.mode === "question_text") {
     const result = await runTextQuestionMode(text);
-    userState[userId] = { mode: "after_question", lastQuestion: text };
+    userState[userId] = { mode: "after_question" };
     return client.replyMessage(event.replyToken, { type: "text", text: result });
   }
 
@@ -152,11 +193,11 @@ async function callOpenAI(messages) {
   });
 
   const json = await res.json();
-  return json.choices[0].message.content;
+  return json.choices?.[0]?.message?.content ?? "ごめんね、うまく返せなかったよ🐻💦";
 }
 
 /* =====================
-   質問モード
+   質問モード（文章）
 ===================== */
 async function runTextQuestionMode(text) {
   return callOpenAI([
@@ -166,15 +207,19 @@ async function runTextQuestionMode(text) {
 }
 
 /* =====================
-   Vision質問（応急安定版）
+   Vision質問（画像）
 ===================== */
-async function runVisionQuestionMode(imageBase64) {
+async function runVisionQuestionMode(imageBase64, officialAnswer) {
+  const officialText = officialAnswer
+    ? `公式の答え（正答）は「${officialAnswer}」です。この答えを正解として解説してください。`
+    : "公式の答えは不明です。画像から読み取って解いてください。";
+
   return callOpenAI([
-    { role: "system", content: QUESTION_SYSTEM_PROMPT },
+    { role: "system", content: VISION_SYSTEM_PROMPT },
     {
       role: "user",
       content: [
-        { type: "text", text: "この画像の問題を読み取って解説して。" },
+        { type: "text", text: officialText },
         {
           type: "image_url",
           image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
@@ -190,9 +235,7 @@ async function runVisionQuestionMode(imageBase64) {
 async function getImageBase64(messageId) {
   const res = await fetch(
     `https://api-data.line.me/v2/bot/message/${messageId}/content`,
-    {
-      headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
-    }
+    { headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` } }
   );
   const buffer = await res.arrayBuffer();
   return Buffer.from(buffer).toString("base64");
@@ -205,12 +248,12 @@ function replyMenu(replyToken) {
   return client.replyMessage(replyToken, {
     type: "text",
     text:
-      "こんにちは🐻✨\n" +
+      "こんにちは🐻✨\n\n" +
       "今日は何をする？\n" +
       "① 質問がしたい😊\n" +
       "② 講義を受けたい📘\n" +
       "③ 演習（類題）をしたい✏️\n" +
-      "④ 雑談がしたい☕",
+      "④ 雑談がしたい💬",
   });
 }
 
