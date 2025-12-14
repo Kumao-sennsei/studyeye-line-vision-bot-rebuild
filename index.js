@@ -25,14 +25,15 @@ const client = new Client({
 const userState = {};
 
 /*
-state例：
-mode:
-- menu
-- question_waiting_input
-- question_waiting_after_image
-
-pendingImage: true/false
-imageId
+state一覧
+menu
+question_intro
+question_waiting
+question_explain
+lecture
+exercise_intro
+exercise_question
+exercise_answer
 */
 
 /* =====================
@@ -62,168 +63,83 @@ app.post(
 ===================== */
 async function handleEvent(event) {
   const userId = event.source.userId;
+  if (event.message.type !== "text" && event.message.type !== "image") return;
 
-  /* ===== 画像受信 ===== */
-  if (event.message?.type === "image") {
-    userState[userId] = {
-      mode: "question_waiting_after_image",
-      imageId: event.message.id,
-    };
+  const text = event.message.type === "text" ? event.message.text.trim() : "";
 
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "画像を受け取ったよ😊\n\n" +
-        "解説の品質を最高のものにするために、\n" +
-        "問題文と、もし分かれば答えも送ってね🐻✨\n\n" +
-        "答えがなくても、考え方は説明できるよ！",
-    });
+  /* ===== 画像質問 ===== */
+  if (event.message.type === "image") {
+    userState[userId] = { state: "question_waiting", imageId: event.message.id };
+    return reply(event.replyToken,
+      "解説の品質を最高のものにするために、\n" +
+      "この問題の答えがあれば送ってね🐻✨\n" +
+      "なければ『答えなし』でOKだよ😊"
+    );
   }
 
-  /* ===== テキスト以外は無視 ===== */
-  if (event.message?.type !== "text") return;
-
-  const text = event.message.text.trim();
-
   /* ===== メニュー ===== */
-  if (text === "①" || text === "質問がしたい") {
-    userState[userId] = { mode: "question_waiting_input" };
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-       text:
-      "こんにちは🐻✨\n\n" +
-      "今日は何をする？\n" +
-      "① 質問がしたい 😊\n" +
-      "② 講義を受けたい 📘\n" +
-      "③ 演習（類題）をしたい ✏️\n" +
-      "④ 雑談がしたい ☕"
+  if (!userState[userId] || userState[userId].state === "menu") {
+    if (text === "①" || text.includes("講義")) {
+      userState[userId] = { state: "lecture" };
+      return reply(event.replyToken,
+        "まずは大事なところを、\n" +
+        "コンパクトにまとめるね🐻✨\n" +
+        "ノートにまとめておくといいよ😊"
+      );
+    }
+    if (text === "②" || text.includes("演習")) {
+      userState[userId] = { state: "exercise_intro" };
+      return reply(event.replyToken,
+        "科目と単元を教えてね🐻✨"
+      );
+    }
+    if (text === "③" || text.includes("質問")) {
+      userState[userId] = { state: "question_intro" };
+      return reply(event.replyToken,
         "解説の品質を最高のものにするために、\n" +
-        "先に問題と答えを送ってください🐻✨\n\n" +
+        "先に問題と答えを送ってください🐻✨\n" +
+        "テキストでも画像でもいいよ！\n\n" +
         "答えが分かっている場合は、\n" +
         "その答えに合わせて丁寧に解説します😊\n\n" +
         "答えがない場合でも、\n" +
-        "解き方や考え方はしっかりお伝えできます！",
-    });
+        "解き方や考え方はしっかりお伝えできます！"
+      );
+    }
+    return showMenu(event.replyToken);
   }
 
-  /* ===== 画像後の追加入力 ===== */
-  if (userState[userId]?.mode === "question_waiting_after_image") {
-    const base64 = await getImageBase64(userState[userId].imageId);
+  /* ===== 質問：文章 ===== */
+  if (userState[userId].state === "question_intro") {
+    userState[userId] = { state: "question_explain", question: text };
+    const result = await askOpenAI(text);
+    return reply(event.replyToken, result);
+  }
 
-    const result = await runVisionExplainOnly(
-      base64,
-      text
+  /* ===== 演習 ===== */
+  if (userState[userId].state === "exercise_intro") {
+    userState[userId] = { state: "exercise_question", topic: text };
+    return reply(event.replyToken,
+      "じゃあ、問題を作るね😊\n" +
+      "分からないところは、\n" +
+      "無理しなくていいからね🐻✨"
     );
-
-    userState[userId] = { mode: "menu" };
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: sanitize(result),
-    });
   }
 
-  /* ===== 質問モード：文章 ===== */
-  if (userState[userId]?.mode === "question_waiting_input") {
-    const result = await runTextExplainOnly(text);
-
-    userState[userId] = { mode: "menu" };
-
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: sanitize(result),
-    });
+  if (userState[userId].state === "exercise_question") {
+    userState[userId] = { state: "exercise_answer", answer: text };
+    return reply(event.replyToken,
+      "答えを送ってくれてありがとう🐻✨"
+    );
   }
 
-  /* ===== デフォルト：メニュー ===== */
-  return client.replyMessage(event.replyToken, {
-    type: "text",
-    text:
-      "次は何しよっか？🐻✨\n\n" +
-      "① 質問がしたい 😊",
-  });
+  /* ===== 共通フォールバック ===== */
+  return showMenu(event.replyToken);
 }
 
 /* =====================
-   質問モード（答えを断定しない）
+   OpenAI 呼び出し
 ===================== */
-async function runTextExplainOnly(text) {
-  const prompt = `
-あなたは「くまお先生」。
-中学生・高校生に向けて、やさしく説明します。
-
-【絶対ルール】
-・正解や答えを断定しない
-・数値や選択肢番号を確定しない
-・考え方と解き方のみ説明する
-・強調記号や装飾記号は使わない
-
-【出力形式】
-【問題の要点】
-【考え方】
-1⃣
-2⃣
-3⃣
-【ポイント】
-
-最後に
-「正解が分かったら送ってね🐻✨」
-と書く
-`;
-
-  return callOpenAI([
-    { role: "system", content: prompt },
-    { role: "user", content: text },
-  ]);
-}
-
-/* =====================
-   Vision：読むだけ・断定禁止
-===================== */
-async function runVisionExplainOnly(imageBase64, extraText) {
-  const prompt = `
-あなたは「くまお先生」。
-
-【絶対ルール】
-・画像の問題を読み取るだけ
-・正解を断定しない
-・選択肢番号や数値を決めない
-・考え方のみ説明する
-・装飾記号は禁止
-
-【出力形式】
-【問題の要点】
-【考え方】
-1⃣
-2⃣
-3⃣
-【ポイント】
-
-最後に
-「正解が分かったら送ってね🐻✨」
-と書く
-`;
-
-  return callOpenAI([
-    { role: "system", content: prompt },
-    {
-      role: "user",
-      content: [
-        { type: "text", text: extraText || "問題文の補足です。" },
-        {
-          type: "image_url",
-          image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
-        },
-      ],
-    },
-  ]);
-}
-
-/* =====================
-   OpenAI 共通
-===================== */
-async function callOpenAI(messages) {
+async function askOpenAI(userText) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -232,33 +148,53 @@ async function callOpenAI(messages) {
     },
     body: JSON.stringify({
       model: "gpt-4.1",
-      messages,
+      messages: [
+        {
+          role: "system",
+          content:
+            "あなたはくまお先生です。やさしく明るく説明します。" +
+            "アスタリスクや区切り線は出力しません。"
+        },
+        { role: "user", content: userText }
+      ],
     }),
   });
 
   const json = await res.json();
-  return json.choices[0].message.content;
+  return sanitize(json.choices[0].message.content);
 }
 
 /* =====================
-   ** 完全削除（保険）
+   出力サニタイズ
 ===================== */
 function sanitize(text) {
-  return text.replace(/\*\*/g, "");
+  return text
+    .replace(/\*/g, "")
+    .replace(/_{2,}/g, "")
+    .replace(/-{2,}/g, "");
 }
 
 /* =====================
-   画像取得
+   メニュー表示
 ===================== */
-async function getImageBase64(messageId) {
-  const res = await fetch(
-    `https://api-data.line.me/v2/bot/message/${messageId}/content`,
-    {
-      headers: { Authorization: `Bearer ${CHANNEL_ACCESS_TOKEN}` },
-    }
+function showMenu(token) {
+  return reply(token,
+    "次は何をしよっか？🐻✨\n\n" +
+    "① 講義を受けたい 📘\n" +
+    "② 演習をしたい ✏️\n" +
+    "③ 質問がしたい 😊\n" +
+    "④ 雑談がしたい ☕"
   );
-  const buffer = await res.arrayBuffer();
-  return Buffer.from(buffer).toString("base64");
+}
+
+/* =====================
+   返信共通
+===================== */
+function reply(token, text) {
+  return client.replyMessage(token, {
+    type: "text",
+    text,
+  });
 }
 
 /* =====================
@@ -266,5 +202,5 @@ async function getImageBase64(messageId) {
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 質問モード起動！");
+  console.log("くまお先生 起動中 🐻✨");
 });
