@@ -24,47 +24,16 @@ const client = new Client({
 ===================== */
 const userState = {};
 
-/* =====================
-   プロンプト
-===================== */
+/*
+state例：
+mode:
+- menu
+- question_waiting_input
+- question_waiting_after_image
 
-const BASE_RULE_PROMPT = `
-あなたは「くまお先生」。
-とてもやさしく明るく、生徒に寄り添って説明します🐻✨
-
-【表記ルール】
-・Markdown記法は禁止（**、--- 等使わない）
-・LaTeX記法は禁止
-・仕切り線は使わない
-・√、√2、10²³ は使用OK
-・分数は a/b の形
-
-【必須テンプレ】
-くまお先生です！やさしく解説するね🐻✨
-
-【問題の要点】
-
-【解き方】
-1⃣
-2⃣
-3⃣
-
-【解説】
-
-【答え】
-`;
-
-const QUESTION_SYSTEM_PROMPT = BASE_RULE_PROMPT;
-
-const EXERCISE_RULE_PROMPT = `
-【類題ルール】
-・必ず答えを書く
-・記述問題は正答例を書く
-・直前の問題と同じ単元・考え方
-`;
-
-const EXERCISE_SYSTEM_PROMPT =
-  BASE_RULE_PROMPT + EXERCISE_RULE_PROMPT;
+pendingImage: true/false
+imageId
+*/
 
 /* =====================
    Webhook
@@ -83,13 +52,8 @@ app.post(
     },
   }),
   async (req, res) => {
-    try {
-      await Promise.all(req.body.events.map(handleEvent));
-      res.status(200).end();
-    } catch (e) {
-      console.error(e);
-      res.status(200).end();
-    }
+    await Promise.all(req.body.events.map(handleEvent));
+    res.status(200).end();
   }
 );
 
@@ -99,121 +63,159 @@ app.post(
 async function handleEvent(event) {
   const userId = event.source.userId;
 
-  /* 画像 */
+  /* ===== 画像受信 ===== */
   if (event.message?.type === "image") {
     userState[userId] = {
-      mode: "waiting_answer",
+      mode: "question_waiting_after_image",
       imageId: event.message.id,
     };
 
     return client.replyMessage(event.replyToken, {
       type: "text",
       text:
-        "画像を受け取ったよ🐻✨\n" +
-        "公式の答えが分かれば送ってね。\n" +
-        "なければ「答えなし」でOKだよ😊",
+        "画像を受け取ったよ😊\n\n" +
+        "解説の品質を最高のものにするために、\n" +
+        "問題文と、もし分かれば答えも送ってね🐻✨\n\n" +
+        "答えがなくても、考え方は説明できるよ！",
     });
   }
 
+  /* ===== テキスト以外は無視 ===== */
   if (event.message?.type !== "text") return;
+
   const text = event.message.text.trim();
 
-  /* 画像の答え待ち */
-  if (userState[userId]?.mode === "waiting_answer") {
+  /* ===== メニュー ===== */
+  if (text === "①" || text === "質問がしたい") {
+    userState[userId] = { mode: "question_waiting_input" };
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text:
+        "解説の品質を最高のものにするために、\n" +
+        "先に問題と答えを送ってください🐻✨\n\n" +
+        "答えが分かっている場合は、\n" +
+        "その答えに合わせて丁寧に解説します😊\n\n" +
+        "答えがない場合でも、\n" +
+        "解き方や考え方はしっかりお伝えできます！",
+    });
+  }
+
+  /* ===== 画像後の追加入力 ===== */
+  if (userState[userId]?.mode === "question_waiting_after_image") {
     const base64 = await getImageBase64(userState[userId].imageId);
-    const result = await runVisionQuestionMode(base64, text);
-    userState[userId] = { mode: "after_question" };
-    return client.replyMessage(event.replyToken, { type: "text", text: result });
-  }
 
-  /* 類題を選択 */
-  if (userState[userId]?.mode === "after_question" && text.includes("類題")) {
-    userState[userId].mode = "exercise_question";
-    return handleEvent(event);
-  }
+    const result = await runVisionExplainOnly(
+      base64,
+      text
+    );
 
-  /* 類題出題 */
-  if (userState[userId]?.mode === "exercise_question") {
-    const question = await callOpenAI([
-      { role: "system", content: EXERCISE_SYSTEM_PROMPT },
-      { role: "user", content: userState[userId].lastQuestion || "" },
-    ]);
-
-    userState[userId] = {
-      mode: "exercise_waiting_answer",
-      exerciseQuestion: question,
-    };
+    userState[userId] = { mode: "menu" };
 
     return client.replyMessage(event.replyToken, {
       type: "text",
-      text: "【類題】\n" + question,
+      text: sanitize(result),
     });
   }
 
-  /* 類題の解説 → 講義確認 */
-  if (userState[userId]?.mode === "exercise_waiting_answer") {
-    const explanation = await callOpenAI([
-      { role: "system", content: QUESTION_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content:
-          "問題:\n" +
-          userState[userId].exerciseQuestion +
-          "\n生徒の答え:\n" +
-          text,
-      },
-    ]);
+  /* ===== 質問モード：文章 ===== */
+  if (userState[userId]?.mode === "question_waiting_input") {
+    const result = await runTextExplainOnly(text);
 
-    userState[userId] = { mode: "ask_lecture" };
+    userState[userId] = { mode: "menu" };
 
     return client.replyMessage(event.replyToken, {
       type: "text",
-      text:
-        explanation +
-        "\n\nこの単元、講義で復習しよっか？🐻✨\nはい / いいえ",
+      text: sanitize(result),
     });
   }
 
-  /* 講義確認 */
-  if (userState[userId]?.mode === "ask_lecture") {
-    if (text === "はい") {
-      userState[userId] = { mode: "lecture" };
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "講義モードは準備中だよ📘",
-      });
-    }
-
-    if (text === "いいえ") {
-      userState[userId] = { mode: "menu" };
-      return replyMenu(event.replyToken);
-    }
-  }
-
-  /* 質問モード */
-  if (text === "①" || text.includes("質問")) {
-    userState[userId] = { mode: "question_text" };
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text:
-        "質問モードだよ🐻✨\n文章でも画像でも送ってOKだよ😊",
-    });
-  }
-
-  if (userState[userId]?.mode === "question_text") {
-    const result = await runTextQuestionMode(text);
-    userState[userId] = {
-      mode: "after_question",
-      lastQuestion: text,
-    };
-    return client.replyMessage(event.replyToken, { type: "text", text: result });
-  }
-
-  return replyMenu(event.replyToken);
+  /* ===== デフォルト：メニュー ===== */
+  return client.replyMessage(event.replyToken, {
+    type: "text",
+    text:
+      "次は何しよっか？🐻✨\n\n" +
+      "① 質問がしたい 😊",
+  });
 }
 
 /* =====================
-   OpenAI
+   質問モード（答えを断定しない）
+===================== */
+async function runTextExplainOnly(text) {
+  const prompt = `
+あなたは「くまお先生」。
+中学生・高校生に向けて、やさしく説明します。
+
+【絶対ルール】
+・正解や答えを断定しない
+・数値や選択肢番号を確定しない
+・考え方と解き方のみ説明する
+・強調記号や装飾記号は使わない
+
+【出力形式】
+【問題の要点】
+【考え方】
+1⃣
+2⃣
+3⃣
+【ポイント】
+
+最後に
+「正解が分かったら送ってね🐻✨」
+と書く
+`;
+
+  return callOpenAI([
+    { role: "system", content: prompt },
+    { role: "user", content: text },
+  ]);
+}
+
+/* =====================
+   Vision：読むだけ・断定禁止
+===================== */
+async function runVisionExplainOnly(imageBase64, extraText) {
+  const prompt = `
+あなたは「くまお先生」。
+
+【絶対ルール】
+・画像の問題を読み取るだけ
+・正解を断定しない
+・選択肢番号や数値を決めない
+・考え方のみ説明する
+・装飾記号は禁止
+
+【出力形式】
+【問題の要点】
+【考え方】
+1⃣
+2⃣
+3⃣
+【ポイント】
+
+最後に
+「正解が分かったら送ってね🐻✨」
+と書く
+`;
+
+  return callOpenAI([
+    { role: "system", content: prompt },
+    {
+      role: "user",
+      content: [
+        { type: "text", text: extraText || "問題文の補足です。" },
+        {
+          type: "image_url",
+          image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
+        },
+      ],
+    },
+  ]);
+}
+
+/* =====================
+   OpenAI 共通
 ===================== */
 async function callOpenAI(messages) {
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -229,32 +231,19 @@ async function callOpenAI(messages) {
   });
 
   const json = await res.json();
-  return json.choices?.[0]?.message?.content || "";
+  return json.choices[0].message.content;
 }
 
-async function runTextQuestionMode(text) {
-  return callOpenAI([
-    { role: "system", content: QUESTION_SYSTEM_PROMPT },
-    { role: "user", content: text },
-  ]);
+/* =====================
+   ** 完全削除（保険）
+===================== */
+function sanitize(text) {
+  return text.replace(/\*\*/g, "");
 }
 
-async function runVisionQuestionMode(imageBase64, officialAnswer) {
-  return callOpenAI([
-    { role: "system", content: QUESTION_SYSTEM_PROMPT },
-    {
-      role: "user",
-      content: [
-        { type: "text", text: officialAnswer || "答えなし" },
-        {
-          type: "image_url",
-          image_url: { url: `data:image/jpeg;base64,${imageBase64}` },
-        },
-      ],
-    },
-  ]);
-}
-
+/* =====================
+   画像取得
+===================== */
 async function getImageBase64(messageId) {
   const res = await fetch(
     `https://api-data.line.me/v2/bot/message/${messageId}/content`,
@@ -266,22 +255,10 @@ async function getImageBase64(messageId) {
   return Buffer.from(buffer).toString("base64");
 }
 
-function replyMenu(replyToken) {
-  return client.replyMessage(replyToken, {
-    type: "text",
-    text:
-      "次は何しよっか？🐻✨\n" +
-      "① 質問がしたい😊\n" +
-      "② 講義を受けたい📘\n" +
-      "③ 演習（類題）をしたい✏️\n" +
-      "④ 雑談がしたい💬",
-  });
-}
-
 /* =====================
    起動
 ===================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log("🐻✨ 起動しました");
+  console.log("🐻✨ 質問モード起動！");
 });
