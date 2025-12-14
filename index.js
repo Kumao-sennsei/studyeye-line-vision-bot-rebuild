@@ -1,206 +1,132 @@
 import express from "express";
-import crypto from "crypto";
-import fetch from "node-fetch";
 import { Client } from "@line/bot-sdk";
 
 const app = express();
 
-/* =====================
-   環境変数
-===================== */
-const CHANNEL_SECRET = process.env.CHANNEL_SECRET;
-const CHANNEL_ACCESS_TOKEN = process.env.CHANNEL_ACCESS_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+/* ========= 環境変数 ========= */
+const config = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+};
 
-/* =====================
-   LINE クライアント
-===================== */
-const client = new Client({
-  channelAccessToken: CHANNEL_ACCESS_TOKEN,
+const client = new Client(config);
+
+/* ========= 状態管理（超重要） ========= */
+/*
+state例:
+menu
+lecture_wait_topic
+lecture_running
+question_wait_problem
+*/
+const userState = new Map();
+
+/* ========= メニュー文言（固定・変更禁止） ========= */
+const MAIN_MENU_TEXT =
+`次は何をしよっか？🐻✨
+① 講義を受けたい 📘
+② 演習をしたい ✏️
+③ 質問がしたい 😊
+④ 雑談がしたい ☕`;
+
+/* ========= Webhook ========= */
+app.post("/webhook", express.json(), async (req, res) => {
+  try {
+    const events = req.body.events;
+    for (const event of events) {
+      if (event.type === "message") {
+        await handleMessage(event);
+      }
+    }
+    res.sendStatus(200);
+  } catch (e) {
+    console.error(e);
+    res.sendStatus(500);
+  }
 });
 
-/* =====================
-   ユーザー状態
-===================== */
-const userState = {};
-
-/*
-state一覧
-menu
-question_intro
-question_waiting
-question_explain
-lecture
-exercise_intro
-exercise_question
-exercise_answer
-*/
-
-/* =====================
-   Webhook
-===================== */
-app.post(
-  "/webhook",
-  express.json({
-    verify: (req, res, buf) => {
-      const signature = crypto
-        .createHmac("SHA256", CHANNEL_SECRET)
-        .update(buf)
-        .digest("base64");
-      if (signature !== req.headers["x-line-signature"]) {
-        throw new Error("Invalid signature");
-      }
-    },
-  }),
-  async (req, res) => {
-    await Promise.all(req.body.events.map(handleEvent));
-    res.status(200).end();
-  }
-);
-
-/* =====================
-   メイン処理
-===================== */
-async function handleEvent(event) {
+/* ========= メッセージ処理 ========= */
+async function handleMessage(event) {
   const userId = event.source.userId;
-  if (event.message.type !== "text" && event.message.type !== "image") return;
+  const text = event.message.text?.trim();
 
-  const text = event.message.type === "text" ? event.message.text.trim() : "";
-
-  /* ===== 画像質問 ===== */
-  if (event.message.type === "image") {
-    userState[userId] = { state: "question_waiting", imageId: event.message.id };
-    return reply(event.replyToken,
-      "解説の品質を最高のものにするために、\n" +
-      "この問題の答えがあれば送ってね🐻✨\n" +
-      "なければ『答えなし』でOKだよ😊"
-    );
+  // 初期状態
+  if (!userState.has(userId)) {
+    userState.set(userId, "menu");
   }
 
-  /* ===== メニュー ===== */
-  if (!userState[userId] || userState[userId].state === "menu") {
+  const state = userState.get(userId);
+
+  /* ===== あいさつ → メニュー ===== */
+  if (text === "こんにちは") {
+    userState.set(userId, "menu");
+    return replyText(event, MAIN_MENU_TEXT);
+  }
+
+  /* ===== メニュー処理 ===== */
+  if (state === "menu") {
     if (text === "①" || text.includes("講義")) {
-      userState[userId] = { state: "lecture" };
-      return reply(event.replyToken,
-        "まずは大事なところを、\n" +
-        "コンパクトにまとめるね🐻✨\n" +
-        "ノートにまとめておくといいよ😊"
+      userState.set(userId, "lecture_wait_topic");
+      return replyText(
+        event,
+        "いいね😊\n受けたい講義の\n科目と単元を教えてね🐻✨\n\n例）化学 酸化還元反応"
       );
     }
-    if (text === "②" || text.includes("演習")) {
-      userState[userId] = { state: "exercise_intro" };
-      return reply(event.replyToken,
-        "科目と単元を教えてね🐻✨"
-      );
-    }
+
     if (text === "③" || text.includes("質問")) {
-      userState[userId] = { state: "question_intro" };
-      return reply(event.replyToken,
-        "解説の品質を最高のものにするために、\n" +
-        "先に問題と答えを送ってください🐻✨\n" +
-        "テキストでも画像でもいいよ！\n\n" +
-        "答えが分かっている場合は、\n" +
-        "その答えに合わせて丁寧に解説します😊\n\n" +
-        "答えがない場合でも、\n" +
-        "解き方や考え方はしっかりお伝えできます！"
+      userState.set(userId, "question_wait_problem");
+      return replyText(
+        event,
+        `解説の品質を最高のものにするために、
+先に問題と答えを送ってください🐻✨
+テキストでも画像でもいいよ！
+
+答えが分かっている場合は、
+その答えに合わせて丁寧に解説します😊
+
+答えがない場合でも、
+解き方や考え方はしっかりお伝えできます！`
       );
     }
-    return showMenu(event.replyToken);
+
+    return replyText(event, MAIN_MENU_TEXT);
   }
 
-  /* ===== 質問：文章 ===== */
-  if (userState[userId].state === "question_intro") {
-    userState[userId] = { state: "question_explain", question: text };
-    const result = await askOpenAI(text);
-    return reply(event.replyToken, result);
-  }
+  /* ===== 講義ルート ===== */
+  if (state === "lecture_wait_topic") {
+    userState.set(userId, "lecture_running");
+    return replyText(
+      event,
+      `ありがとう😊
+「${text}」だね！
 
-  /* ===== 演習 ===== */
-  if (userState[userId].state === "exercise_intro") {
-    userState[userId] = { state: "exercise_question", topic: text };
-    return reply(event.replyToken,
-      "じゃあ、問題を作るね😊\n" +
-      "分からないところは、\n" +
-      "無理しなくていいからね🐻✨"
+じゃあ、講義を始めていくね🐻✨
+大事なところはノートにまとめておくと復習しやすいよ😊`
     );
   }
 
-  if (userState[userId].state === "exercise_question") {
-    userState[userId] = { state: "exercise_answer", answer: text };
-    return reply(event.replyToken,
-      "答えを送ってくれてありがとう🐻✨"
+  /* ===== 質問ルート ===== */
+  if (state === "question_wait_problem") {
+    // ここではまだ解説しない（安全）
+    userState.set(userId, "menu");
+    return replyText(
+      event,
+      "問題を送ってくれてありがとう😊\n\nこのあと、必要に応じて丁寧に解説するね🐻✨\n\n" +
+      MAIN_MENU_TEXT
     );
   }
-
-  /* ===== 共通フォールバック ===== */
-  return showMenu(event.replyToken);
 }
 
-/* =====================
-   OpenAI 呼び出し
-===================== */
-async function askOpenAI(userText) {
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4.1",
-      messages: [
-        {
-          role: "system",
-          content:
-            "あなたはくまお先生です。やさしく明るく説明します。" +
-            "アスタリスクや区切り線は出力しません。"
-        },
-        { role: "user", content: userText }
-      ],
-    }),
-  });
-
-  const json = await res.json();
-  return sanitize(json.choices[0].message.content);
-}
-
-/* =====================
-   出力サニタイズ
-===================== */
-function sanitize(text) {
-  return text
-    .replace(/\*/g, "")
-    .replace(/_{2,}/g, "")
-    .replace(/-{2,}/g, "");
-}
-
-/* =====================
-   メニュー表示
-===================== */
-function showMenu(token) {
-  return reply(token,
-    "次は何をしよっか？🐻✨\n\n" +
-    "① 講義を受けたい 📘\n" +
-    "② 演習をしたい ✏️\n" +
-    "③ 質問がしたい 😊\n" +
-    "④ 雑談がしたい ☕"
-  );
-}
-
-/* =====================
-   返信共通
-===================== */
-function reply(token, text) {
-  return client.replyMessage(token, {
+/* ========= 返信関数 ========= */
+function replyText(event, text) {
+  return client.replyMessage(event.replyToken, {
     type: "text",
     text,
   });
 }
 
-/* =====================
-   起動
-===================== */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("くまお先生 起動中 🐻✨");
+/* ========= 起動 ========= */
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log("Kumao-sensei is running 🐻✨");
 });
